@@ -129,21 +129,6 @@ class MainWindow(QMainWindow):
                 print("File is not a GeoTIFF, loading as regular image")
                 self.pixmap = QPixmap(file_path)
             
-            # Resize the image to 500 pixels while maintaining aspect ratio
-            if not self.pixmap.isNull():
-                # Calculate the new size while maintaining aspect ratio
-                original_size = self.pixmap.size()
-                if original_size.width() > original_size.height():
-                    new_width = 500
-                    new_height = int(500 * original_size.height() / original_size.width())
-                else:
-                    new_height = 500
-                    new_width = int(500 * original_size.width() / original_size.height())
-                
-                # Resize the pixmap
-                self.pixmap = self.pixmap.scaled(new_width, new_height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                print(f"Resized image to {new_width}x{new_height} pixels")
-            
             # Add image to scene
             self.scene.addPixmap(self.pixmap)
             self.scene.setSceneRect(self.pixmap.rect().toRectF())

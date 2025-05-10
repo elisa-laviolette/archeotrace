@@ -1,5 +1,6 @@
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtGui import QImage
 from SegmentationHelper import SegmentationHelper
 
 class MaskGenerationService(QThread):
