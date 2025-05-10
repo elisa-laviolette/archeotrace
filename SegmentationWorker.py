@@ -125,12 +125,32 @@ class SegmentationFromPromptService(QThread):
             raise e
         
 def make_np_array(pixmap):
-    image = pixmap.toImage()
-    width = image.width()
-    height = image.height()
-    ptr = image.bits()
-    ptr.setsize(height * width * 4)
-    arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
-    arr = arr[:, :, :3]  # Remove alpha channel
-
-    return arr
+    try:
+        print("Starting image conversion...")
+        image = pixmap.toImage()
+        width = image.width()
+        height = image.height()
+        print(f"Image dimensions: {width}x{height}")
+        
+        # Ensure the image is in the correct format
+        if image.format() != QImage.Format.Format_RGB32:
+            print("Converting image to RGB32 format...")
+            image = image.convertToFormat(QImage.Format.Format_RGB32)
+        
+        ptr = image.bits()
+        ptr.setsize(height * width * 4)
+        
+        print("Creating numpy array...")
+        # Create a copy of the data to ensure it's contiguous
+        arr = np.frombuffer(ptr, np.uint8).copy().reshape((height, width, 4))
+        print("Array created, shape:", arr.shape)
+        
+        # Remove alpha channel and ensure we have a contiguous array
+        arr = np.ascontiguousarray(arr[:, :, :3])
+        print("Final array shape:", arr.shape)
+        print("Array is contiguous:", arr.flags['C_CONTIGUOUS'])
+        
+        return arr
+    except Exception as e:
+        print(f"Error in make_np_array: {str(e)}")
+        raise

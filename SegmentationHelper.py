@@ -18,9 +18,83 @@ class SegmentationHelper:
         self.predictor = SamPredictor(sam)
 
     def load_image(self, image):
-        print(f"Calculating image embeddings...")
-        self.predictor.set_image(image)
-        self.image = image
+        try:
+            print("Starting load_image method...")
+            print(f"Calculating image embeddings...")
+            print(f"Image shape: {image.shape}")
+            print(f"Image type: {type(image)}")
+            print(f"Image dtype: {image.dtype}")
+            
+            # Add defensive checks
+            if not isinstance(image, np.ndarray):
+                raise TypeError(f"Image must be a numpy array, got {type(image)}")
+            
+            if image.dtype != np.uint8:
+                print(f"Converting image from {image.dtype} to uint8")
+                image = image.astype(np.uint8)
+            
+            if len(image.shape) != 3:
+                raise ValueError(f"Image must have 3 dimensions (H,W,C), got shape {image.shape}")
+            
+            if image.shape[2] != 3:
+                raise ValueError(f"Image must have 3 channels (RGB), got {image.shape[2]} channels")
+            
+            # Ensure the image is contiguous in memory
+            if not image.flags['C_CONTIGUOUS']:
+                print("Making image contiguous in memory...")
+                image = np.ascontiguousarray(image)
+            
+            # Check for NaN or Inf values
+            if np.isnan(image).any():
+                print("Warning: Image contains NaN values")
+                image = np.nan_to_num(image, nan=0)
+            
+            if np.isinf(image).any():
+                print("Warning: Image contains Inf values")
+                image = np.clip(image, 0, 255)
+            
+            print("About to calculate min/max values...")
+            try:
+                min_val = np.min(image)
+                max_val = np.max(image)
+                print(f"Image min/max values: {min_val}/{max_val}")
+            except Exception as e:
+                print(f"Error calculating min/max: {str(e)}")
+                print("Continuing without min/max check...")
+
+            print("About to call set_image...")
+            try:
+                print("Starting set_image call...")
+                # Add a small delay to ensure everything is properly loaded
+                import time
+                time.sleep(0.1)
+                
+                self.predictor.set_image(image)
+                print("set_image call completed")
+                print("Image set successfully")
+            except Exception as e:
+                print(f"Error setting image: {str(e)}")
+                print(f"Error type: {type(e)}")
+                import traceback
+                print(f"Full traceback:\n{traceback.format_exc()}")
+                raise e
+            except:
+                print("Caught non-Exception error (likely a segmentation fault)")
+                raise
+
+            print("About to store image in self.image")
+            self.image = image
+            print("Image stored successfully")
+            
+        except Exception as e:
+            print(f"Error in load_image: {str(e)}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            print(f"Full traceback:\n{traceback.format_exc()}")
+            raise
+        except:
+            print("Caught non-Exception error in load_image (likely a segmentation fault)")
+            raise
 
     def generate_all_masks(self, progress_callback=None):
         print(f"Generating all masks...")
