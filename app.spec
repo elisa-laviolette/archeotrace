@@ -5,7 +5,7 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('sam_vit_h_4b8939.pth', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

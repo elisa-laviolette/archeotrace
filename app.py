@@ -1,9 +1,10 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView
+from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView, QScroller
 from PyQt6.QtGui import QAction, QPixmap, QImage, QPainter
 from PyQt6.QtCore import Qt
 from viewer_mode import ViewerMode
 from ArtifactGraphicsScene import ArtifactGraphicsScene
 from ZoomableGraphicsView import ZoomableGraphicsView
+from SegmentationWorker import SegmentationFromPromptService
 
 import sys
 
@@ -21,6 +22,17 @@ class MainWindow(QMainWindow):
 
         # Initialize mode
         self.current_mode = ViewerMode.NORMAL
+
+        # Track if a GeoTIFF is loaded
+        self.is_geotiff_loaded = False
+
+        # Initialize segment_worker
+        self.segment_worker = None
+        self.mask_gen_service = None
+
+        # Connect the segmentation request signals to the segmentation methods
+        self.scene.segmentation_validation_requested.connect(self.validate_segmentation)
+        self.scene.segmentation_preview_requested.connect(self.preview_segmentation)
 
         # Create toolbar
         self.toolbar = QToolBar()
@@ -44,6 +56,10 @@ class MainWindow(QMainWindow):
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         main_layout.addWidget(self.view)
+
+        # Enable touch gestures
+        self.grabGesture(Qt.GestureType.PinchGesture)
+        QScroller.grabGesture(self.view.viewport(), QScroller.ScrollerGestureType.TouchGesture)
 
         # Create a label to display the number of artifacts detected
         self.shape_count_label = QLabel("0 artifacts detected")
@@ -117,6 +133,144 @@ class MainWindow(QMainWindow):
             self.scene.addPixmap(self.pixmap)
             self.scene.setSceneRect(self.pixmap.rect().toRectF())
             self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+            self.initialize_segmentation_service()
+
+    def initialize_segmentation_service(self):
+        """Initialize the segmentation service and connect signals."""
+        self.segment_worker = SegmentationFromPromptService(self.pixmap)
+        
+        # Connect signals
+        self.segment_worker.progress_updated.connect(self.update_progress)
+        self.segment_worker.segmentation_complete.connect(self.handle_segmentation_complete)
+        self.segment_worker.segmentation_preview_complete.connect(self.handle_segmentation_preview_complete)
+        
+        # Connect scene signals
+        self.scene.segmentation_validation_requested.connect(self.validate_segmentation)
+        self.scene.segmentation_preview_requested.connect(self.preview_segmentation)
+
+    def validate_segmentation(self):
+        if not self.preview_polygon:
+            print("No preview polygon to validate")
+            return
+            
+        try:
+            # Get the polygon from the preview item
+            polygon = self.preview_polygon.polygon()
+            
+            # Remove the preview polygon first
+            self.scene.removeItem(self.preview_polygon)
+            self.preview_polygon = None
+            
+            # Create and add the permanent polygon
+            polygon_item = self.create_polygon_item(polygon)
+            if polygon_item:
+                self.scene.addItem(polygon_item)
+                self.update_shape_count()
+                self.update_attributes_table()
+            else:
+                print("Failed to create polygon item")
+        except Exception as e:
+            print(f"Error in validate_segmentation: {str(e)}")
+            # Clean up preview polygon if it still exists
+            if self.preview_polygon:
+                try:
+                    self.scene.removeItem(self.preview_polygon)
+                except RuntimeError:
+                    pass
+                self.preview_polygon = None
+
+    def preview_segmentation(self, scene_pos):
+        if self.segment_worker is None:
+            raise ValueError("Segmentation worker should not be None")
+        
+        self.segment_worker.preview_segmentation(
+            point_prompt=(scene_pos.x(), scene_pos.y())
+        )
+
+    def update_progress(self, value):
+        """Update the progress bar value and visibility."""
+        print(f"update_progress called with value {value}")
+        self.progress_bar.setValue(value)
+        
+        # Show progress bar for values between 0 and 100 (exclusive)
+        # Hide it for values of 0 or 100
+        if value == 0:
+            print("Hiding progress bar (value is 0)")
+            self.progress_bar.setVisible(False)
+        elif value == 100:
+            print("Progress value is 100, keeping bar visible until completion")
+            # Keep the progress bar visible until segmentation_complete is called
+            self.progress_bar.setVisible(True)
+        else:
+            print(f"Showing progress bar (value is {value})")
+            self.progress_bar.setVisible(True)
+            
+        # Process events to ensure UI updates
+        QApplication.processEvents()
+
+    def handle_segmentation_complete(self, masks):
+        """Handle the completion of segmentation."""
+        print("handle_segmentation_complete called")
+        if masks is None:
+            print("No masks received")
+            return
+            
+        print(f"Processing {len(masks)} masks")
+        
+        # Block signals to prevent recursive updates
+        self.scene.blockSignals(True)
+        self.attributes_table.blockSignals(True)
+        
+        try:
+            # Process each mask and convert to polygon
+            for mask in masks:
+                polygon = self.convert_mask_to_polygon(mask)
+                if polygon:
+                    polygon_item = self.create_polygon_item(polygon)
+                    if polygon_item:
+                        self.scene.addItem(polygon_item)
+            
+            # Update the table view immediately
+            self.update_attributes_table()
+            
+            # Update shape count
+            self.update_shape_count()
+            
+            # Enable export button
+            self.export_svg_button.setEnabled(True)
+            
+        finally:
+            # Unblock signals
+            self.scene.blockSignals(False)
+            self.attributes_table.blockSignals(False)
+        
+        # Hide the progress bar and reset its value
+        print("Hiding progress bar in handle_segmentation_complete")
+        self.progress_bar.setValue(0)  # Reset progress value first
+        self.progress_bar.setVisible(False)  # Hide the progress bar
+        
+        print("handle_segmentation_complete finished")
+        
+        # Process events to ensure UI updates
+        QApplication.processEvents()
+
+    def handle_segmentation_preview_complete(self, mask):
+        # Convert mask to polygon
+        polygon = self.convert_mask_to_polygon(mask)
+        if polygon:
+            # Create polygon item and add to scene
+            polygon_item = self.create_preview_polygon_item(polygon)
+            
+            # Safely remove existing preview polygon
+            if self.preview_polygon:
+                try:
+                    self.scene.removeItem(self.preview_polygon)
+                except RuntimeError:
+                    pass  # Ignore if the item was already deleted
+
+            self.preview_polygon = polygon_item
+            self.scene.addItem(self.preview_polygon)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
