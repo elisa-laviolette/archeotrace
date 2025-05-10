@@ -39,7 +39,7 @@ if sys.platform == 'win32':
         entitlements_file=None,
     )
 else:
-    # macOS: Keep the current directory-based distribution
+    # macOS: Create only the .app bundle
     exe = EXE(
         pyz,
         a.scripts,
@@ -57,17 +57,10 @@ else:
         codesign_identity=None,
         entitlements_file=None,
     )
-    coll = COLLECT(
+    app = BUNDLE(
         exe,
         a.binaries,
         a.datas,
-        strip=False,
-        upx=True,
-        upx_exclude=[],
-        name='app',
-    )
-    app = BUNDLE(
-        coll,
         name='app.app',
         icon=None,
         bundle_identifier=None,
