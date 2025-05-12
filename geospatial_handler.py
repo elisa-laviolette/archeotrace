@@ -1,5 +1,34 @@
-import rasterio
-from rasterio.transform import Affine
+import os
+import sys
+import site
+
+def get_gdal_paths():
+    """Get GDAL paths based on whether we're running from source or from a packaged app."""
+    if getattr(sys, 'frozen', False):
+        # Running in a bundle
+        base_path = sys._MEIPASS
+        return {
+            'GDAL_DATA': os.path.join(base_path, 'gdal_data'),
+            'PROJ_LIB': os.path.join(base_path, 'proj'),
+            'GDAL_DRIVER_PATH': os.path.join(base_path, 'gdalplugins')
+        }
+    else:
+        # Running in normal Python environment
+        return {
+            'GDAL_DATA': '/opt/homebrew/share/gdal',
+            'PROJ_LIB': '/opt/homebrew/share/proj',
+            'GDAL_DRIVER_PATH': '/opt/homebrew/lib/gdalplugins'
+        }
+
+# Set GDAL environment variables
+gdal_paths = get_gdal_paths()
+for key, value in gdal_paths.items():
+    os.environ[key] = value
+
+# Ensure we're using the correct PROJ installation
+os.environ['PROJ_DATA'] = gdal_paths['PROJ_LIB']
+os.environ['PROJ_NETWORK'] = 'ON'
+
 from osgeo import gdal, ogr
 import numpy as np
 from PyQt6.QtCore import QPointF
@@ -12,6 +41,17 @@ gdal.SetConfigOption('GDAL_DISABLE_READDIR_ON_OPEN', 'TRUE')
 gdal.SetConfigOption('CPL_DEBUG', 'OFF')
 gdal.SetConfigOption('GDAL_SKIP', 'PDF')  # Disable PDF plugin
 
+# Configure PROJ to use the correct database
+gdal.SetConfigOption('PROJ_DATA', gdal_paths['PROJ_LIB'])
+gdal.SetConfigOption('PROJ_NETWORK', 'ON')
+
+# Print GDAL version and configuration for debugging
+print(f"GDAL Version: {gdal.__version__}")
+print(f"GDAL_DATA: {os.environ.get('GDAL_DATA')}")
+print(f"PROJ_LIB: {os.environ.get('PROJ_LIB')}")
+print(f"PROJ_DATA: {os.environ.get('PROJ_DATA')}")
+print(f"GDAL_DRIVER_PATH: {os.environ.get('GDAL_DRIVER_PATH')}")
+
 class GeospatialHandler:
     def __init__(self):
         self.transform = None
@@ -22,24 +62,81 @@ class GeospatialHandler:
         """Load a GeoTIFF file and extract geographic metadata."""
         try:
             print(f"Opening GeoTIFF with GDAL: {file_path}")
-            self.dataset = gdal.Open(file_path)
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"GeoTIFF file not found: {file_path}")
+            
+            # Try to open with specific driver
+            driver = gdal.GetDriverByName('GTiff')
+            if driver is None:
+                raise ValueError("GTiff driver not available")
+            
+            # Open the dataset with more detailed error checking
+            self.dataset = gdal.Open(file_path, gdal.GA_ReadOnly)
             if self.dataset is None:
-                raise ValueError("Could not open GeoTIFF file")
+                error_msg = gdal.GetLastErrorMsg()
+                raise ValueError(f"Could not open GeoTIFF file. GDAL error: {error_msg}")
             
             # Get the geotransform
             self.transform = self.dataset.GetGeoTransform()
+            if self.transform is None:
+                print("Warning: Could not read geotransform from GeoTIFF")
+                self.transform = (0, 1, 0, 0, 0, 1)  # Default identity transform
             print(f"Geotransform: {self.transform}")
             
-            # Get the CRS
+            # Enhanced CRS debugging
+            print("\nCRS Debug Information:")
+            print("----------------------")
+            
+            # Try to get projection using GetProjection()
             proj = self.dataset.GetProjection()
-            print(f"Projection WKT: {proj}")
-            self.crs = ogr.osr.SpatialReference()
-            self.crs.ImportFromWkt(proj)
-            print(f"CRS imported successfully: {self.crs.ExportToWkt()}")
+            print(f"GetProjection() result: {proj}")
+            
+            # Try to get projection using GetSpatialRef()
+            spatial_ref = self.dataset.GetSpatialRef()
+            if spatial_ref:
+                print(f"GetSpatialRef() result: {spatial_ref.ExportToWkt()}")
+            
+            # Try to get projection using GetGCPProjection()
+            gcp_proj = self.dataset.GetGCPProjection()
+            if gcp_proj:
+                print(f"GetGCPProjection() result: {gcp_proj}")
+            
+            # Get metadata
+            metadata = self.dataset.GetMetadata()
+            if metadata:
+                print("\nDataset Metadata:")
+                for key, value in metadata.items():
+                    print(f"{key}: {value}")
+            
+            # Try to get projection from metadata
+            if metadata and 'TIFFTAG_GEOTIEPOINTS' in metadata:
+                print("\nFound GeoTIFF tiepoints in metadata")
+            
+            # Set up CRS
+            if proj:
+                print("\nAttempting to import CRS from WKT...")
+                self.crs = ogr.osr.SpatialReference()
+                if self.crs.ImportFromWkt(proj) == 0:
+                    print(f"CRS imported successfully: {self.crs.ExportToWkt()}")
+                    # Try to get EPSG code
+                    auth_name = self.crs.GetAttrValue('AUTHORITY', 0)
+                    auth_code = self.crs.GetAttrValue('AUTHORITY', 1)
+                    if auth_name and auth_code:
+                        print(f"CRS Authority: {auth_name}:{auth_code}")
+                else:
+                    print("Failed to import CRS from WKT")
+                    self.crs = None
+            else:
+                print("No projection information found in primary methods")
+                self.crs = None
             
             # Get number of bands
             num_bands = self.dataset.RasterCount
-            print(f"Number of bands: {num_bands}")
+            if num_bands <= 0:
+                raise ValueError("No bands found in GeoTIFF")
+            print(f"\nNumber of bands: {num_bands}")
             
             if num_bands >= 3:
                 # For color images, read all three bands
@@ -59,6 +156,8 @@ class GeospatialHandler:
                 return band.ReadAsArray()
         except Exception as e:
             print(f"Error in load_geotiff: {str(e)}")
+            if self.dataset:
+                self.dataset = None
             raise Exception(f"Error loading GeoTIFF: {str(e)}")
 
     def pixel_to_geo(self, pixel_x, pixel_y):
