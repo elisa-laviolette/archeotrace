@@ -1,12 +1,15 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView, QScroller
-from PyQt6.QtGui import QAction, QPixmap, QImage, QPainter
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView, QScroller, QPushButton, QDockWidget, QGraphicsPolygonItem, QSlider, QProgressBar
+from PyQt6.QtGui import QAction, QPixmap, QImage, QPainter, QPolygonF, QPen, QColor, QBrush
+from PyQt6.QtCore import Qt, QPointF
 from viewer_mode import ViewerMode
 from ArtifactGraphicsScene import ArtifactGraphicsScene
 from ZoomableGraphicsView import ZoomableGraphicsView
-from SegmentationWorker import SegmentationFromPromptService
+from SegmentationWorker import SegmentationFromPromptService, MaskGenerationService
+from artifact_polygon_item import ArtifactPolygonItem
 
+import numpy as np
 import sys
+import cv2
 
 class MainWindow(QMainWindow):
 
@@ -38,10 +41,15 @@ class MainWindow(QMainWindow):
         self.toolbar = QToolBar()
         self.addToolBar(self.toolbar)
 
-        # Add load image action
-        load_action = QAction("Load Image", self)
-        load_action.triggered.connect(lambda: self.load_image())
-        self.toolbar.addAction(load_action)
+        # Add buttons to toolbar
+        self.load_button = QPushButton("Load Image")
+        self.load_button.clicked.connect(lambda: self.load_image())
+        self.toolbar.addWidget(self.load_button)
+
+        self.reset_button = QPushButton("Reset View")
+        self.reset_button.clicked.connect(self.view.reset_view)
+        self.reset_button.setEnabled(False)
+        self.toolbar.addWidget(self.reset_button)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -65,6 +73,50 @@ class MainWindow(QMainWindow):
         self.shape_count_label = QLabel("0 artifacts detected")
         self.preview_polygon = None
         main_layout.addWidget(self.shape_count_label)
+        
+        # Add progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)  # Hide initially
+        main_layout.addWidget(self.progress_bar)
+
+        # Dock widget for shape detection tools
+        addArtifactsToolDock = QDockWidget("Add Tools", self)
+        addArtifactsToolDock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, addArtifactsToolDock)
+        
+        toolWidget = QWidget()
+        toolLayout = QVBoxLayout()
+
+        # Shape detection buttons
+        self.detectAllBtn = QPushButton("Detect All Artifacts")
+        self.detectAllBtn.clicked.connect(self.detect_all_artifacts)
+        self.detectAllBtn.setEnabled(False)  # Disabled until image is loaded
+        toolLayout.addWidget(self.detectAllBtn)
+        
+        self.click_to_detect_mode = False
+        self.clickDetectBtn = QPushButton("Click to Detect Artifact")
+        self.clickDetectBtn.setCheckable(True)
+        self.clickDetectBtn.setEnabled(False)  # Disabled until image is loaded
+        self.clickDetectBtn.toggled.connect(self.toggle_click_to_detect_mode)
+        toolLayout.addWidget(self.clickDetectBtn)
+
+        toolWidget.setLayout(toolLayout)
+        addArtifactsToolDock.setWidget(toolWidget)
+
+        viewMenu = self.menuBar().addMenu("View")
+        viewMenu.addAction(addArtifactsToolDock.toggleViewAction())
+
+        # Create a slider for brush size
+        self.brush_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brush_size_slider.setMinimum(1)  # Minimum brush size
+        self.brush_size_slider.setMaximum(20)  # Maximum brush size
+        self.brush_size_slider.setValue(5)  # Default brush size
+        self.brush_size_slider.setEnabled(False)  # Disable initially
+        self.brush_size_slider.valueChanged.connect(self.update_brush_size)  # Connect slider value change
+        main_layout.addWidget(self.brush_size_slider)
 
         self.show()
 
@@ -134,6 +186,11 @@ class MainWindow(QMainWindow):
             self.scene.setSceneRect(self.pixmap.rect().toRectF())
             self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
+            # Enable buttons
+            self.reset_button.setEnabled(True)
+            self.detectAllBtn.setEnabled(True)
+            self.clickDetectBtn.setEnabled(True)
+
             self.initialize_segmentation_service()
 
     def initialize_segmentation_service(self):
@@ -148,6 +205,11 @@ class MainWindow(QMainWindow):
         # Connect scene signals
         self.scene.segmentation_validation_requested.connect(self.validate_segmentation)
         self.scene.segmentation_preview_requested.connect(self.preview_segmentation)
+
+    def initialize_mask_generation_service(self):
+        self.mask_gen_service = MaskGenerationService(self.pixmap)
+        self.mask_gen_service.progress_updated.connect(self.update_progress)
+        self.mask_gen_service.segmentation_complete.connect(self.handle_segmentation_complete)
 
     def validate_segmentation(self):
         if not self.preview_polygon:
@@ -188,6 +250,14 @@ class MainWindow(QMainWindow):
             point_prompt=(scene_pos.x(), scene_pos.y())
         )
 
+    def detect_all_artifacts(self):
+        # Reset progress bar
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        
+        self.initialize_mask_generation_service()
+        self.mask_gen_service.run_mask_generation()  # This will start the thread and run the mask generation
+
     def update_progress(self, value):
         """Update the progress bar value and visibility."""
         print(f"update_progress called with value {value}")
@@ -220,7 +290,7 @@ class MainWindow(QMainWindow):
         
         # Block signals to prevent recursive updates
         self.scene.blockSignals(True)
-        self.attributes_table.blockSignals(True)
+        #self.attributes_table.blockSignals(True)
         
         try:
             # Process each mask and convert to polygon
@@ -232,18 +302,18 @@ class MainWindow(QMainWindow):
                         self.scene.addItem(polygon_item)
             
             # Update the table view immediately
-            self.update_attributes_table()
+            #self.update_attributes_table()
             
             # Update shape count
             self.update_shape_count()
             
             # Enable export button
-            self.export_svg_button.setEnabled(True)
+            #self.export_svg_button.setEnabled(True)
             
         finally:
             # Unblock signals
             self.scene.blockSignals(False)
-            self.attributes_table.blockSignals(False)
+            #self.attributes_table.blockSignals(False)
         
         # Hide the progress bar and reset its value
         print("Hiding progress bar in handle_segmentation_complete")
@@ -271,6 +341,198 @@ class MainWindow(QMainWindow):
 
             self.preview_polygon = polygon_item
             self.scene.addItem(self.preview_polygon)
+
+    def toggle_click_to_detect_mode(self, checked):
+        if checked:
+            self.set_mode(ViewerMode.POINT)
+        elif self.current_mode == ViewerMode.POINT:
+            self.set_mode(ViewerMode.NORMAL)
+
+    def set_mode(self, mode):
+        """Set the viewer mode and update the scene mode."""
+        self.current_mode = mode
+        self.scene.set_mode(mode)
+
+        # Clean up preview polygon at viewer level
+        if self.preview_polygon:
+            self.scene.removeItem(self.preview_polygon)
+            self.preview_polygon = None
+
+        # Update UI based on mode
+        if mode == ViewerMode.POINT:
+            self.click_to_detect_mode = True
+            self.brush_fill_mode = False
+            self.view.setCursor(Qt.CursorShape.CrossCursor)
+            self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.brush_size_slider.setEnabled(False)
+            #self.brushFillBtn.setChecked(False)
+            #self.eraserBtn.setChecked(False)
+            # Disable selection for all polygon items
+            for item in self.scene.items():
+                if isinstance(item, QGraphicsPolygonItem):
+                    item.setFlag(QGraphicsPolygonItem.GraphicsItemFlag.ItemIsSelectable, False)
+
+        elif mode == ViewerMode.BRUSH:
+            self.click_to_detect_mode = False
+            self.brush_fill_mode = True
+            self.view.setCursor(Qt.CursorShape.CrossCursor) 
+            self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.brush_size_slider.setEnabled(True)
+            self.clickDetectBtn.setChecked(False)
+            #self.eraserBtn.setChecked(False)
+            # Disable selection for all polygon items
+            for item in self.scene.items():
+                if isinstance(item, QGraphicsPolygonItem):
+                    item.setFlag(QGraphicsPolygonItem.GraphicsItemFlag.ItemIsSelectable, False)
+
+        elif mode == ViewerMode.ERASER:
+            self.click_to_detect_mode = False
+            self.brush_fill_mode = False
+            self.view.setCursor(Qt.CursorShape.CrossCursor)
+            self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.brush_size_slider.setEnabled(True)
+            self.clickDetectBtn.setChecked(False)
+            #self.brushFillBtn.setChecked(False)
+            # Disable selection for all polygon items
+            for item in self.scene.items():
+                if isinstance(item, QGraphicsPolygonItem):
+                    item.setFlag(QGraphicsPolygonItem.GraphicsItemFlag.ItemIsSelectable, False)
+
+        else:  # ViewerMode.NORMAL
+            self.click_to_detect_mode = False
+            self.brush_fill_mode = False
+            self.view.setCursor(Qt.CursorShape.ArrowCursor)
+            self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.brush_size_slider.setEnabled(False)
+            # Enable selection for all polygon items
+            for item in self.scene.items():
+                if isinstance(item, QGraphicsPolygonItem):
+                    item.setFlag(QGraphicsPolygonItem.GraphicsItemFlag.ItemIsSelectable, True)
+
+    def update_shape_count(self):
+        """Update the label displaying the number of detected artifacts."""
+        artifact_count = sum(1 for item in self.scene.items() if isinstance(item, QGraphicsPolygonItem))
+        self.shape_count_label.setText(f"{artifact_count} artifacts detected")
+        
+        # Enable/disable export buttons based on artifact count and GeoTIFF status
+        has_artifacts = artifact_count > 0
+        #self.export_svg_button.setEnabled(has_artifacts)
+        #self.export_gpkg_button.setEnabled(has_artifacts and self.is_geotiff_loaded)
+
+    def update_brush_size(self, value):
+        """Update the brush size based on the slider value."""
+        self.brush_size_slider.setValue(value)
+        self.scene.set_brush_size(value)
+
+    def convert_mask_to_polygon(self, mask):
+        """Convert a binary mask to a list of polygon points"""
+        mask_uint8 = mask.astype(np.uint8) * 255
+        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_KCOS)
+        
+        if not contours:
+            return None
+        
+        largest_contour = max(contours, key=cv2.contourArea)
+        # Reduce epsilon value to get more points and smoother curves
+        epsilon = 0.0005 * cv2.arcLength(largest_contour, True)
+        approx_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
+        
+        # Convert to QPolygonF
+        points = [QPointF(point[0][0], point[0][1]) for point in approx_contour]
+        return QPolygonF(points)
+
+    def create_polygon_item(self, polygon):
+        """Create a new polygon item with proper styling"""
+        try:
+            if not isinstance(polygon, QPolygonF):
+                print("Invalid polygon type")
+                return None
+                
+            # Create an ArtifactPolygonItem instead of a regular QGraphicsPolygonItem
+            polygon_item = ArtifactPolygonItem(polygon)
+            
+            # Generate random color
+            import random
+            r = random.randint(0, 255)
+            g = random.randint(0, 255)
+            b = random.randint(0, 255)
+            
+            # Set the polygon style with random color
+            pen = QPen(QColor(r, g, b))  # Random color
+            pen.setWidth(2)
+            polygon_item.setPen(pen)
+            
+            # Set a semi-transparent fill with the same random color
+            brush = QBrush(QColor(r, g, b, 50))  # Same color with 50 alpha
+            polygon_item.setBrush(brush)
+            
+            # Make it selectable
+            polygon_item.setFlag(polygon_item.GraphicsItemFlag.ItemIsSelectable)
+            
+            return polygon_item
+            
+        except Exception as e:
+            print(f"Error creating polygon item: {str(e)}")
+            return None
+    
+    def create_preview_polygon_item(self, polygon):
+        """Create a QGraphicsPolygonItem with the given polygon"""
+        color = QColor(0, 255, 255, 127)  # Light blue with 50% alpha
+        
+        polygon_item = QGraphicsPolygonItem(polygon)
+        
+        polygon_item.setPen(QPen(Qt.GlobalColor.transparent))
+        
+        # Set up the brush for fill with more transparency
+        color.setAlpha(50)  # Reduce alpha for more transparency
+        brush = QBrush(color)
+        polygon_item.setBrush(brush)
+        
+        return polygon_item
+
+    def handle_segmentation_with_points(self, polygon_item, foreground_points, background_points, polygon_mask=None, bounding_box=None):
+        """Handle segmentation with foreground and background points."""
+        print("Handling segmentation with points request...")
+        if self.segment_worker is None:
+            print("Error: Segmentation worker is None")
+            raise ValueError("Segmentation worker should not be None")
+
+        try:
+            # Reset progress bar and make it visible
+            print("Setting progress bar to visible and value 1")
+            self.progress_bar.setValue(1)  # Set to 1 to ensure visibility
+            self.progress_bar.setVisible(True)  # Explicitly make it visible
+            QApplication.processEvents()  # Process events to ensure UI updates
+
+            # Store the original polygon item to remove it later
+            self.current_editing_polygon = polygon_item
+            
+            # Convert points to tuples
+            fg_points = [(point.x(), point.y()) for point in foreground_points]
+            bg_points = [(point.x(), point.y()) for point in background_points]
+            
+            print(f"Starting segmentation with {len(fg_points)} foreground points and {len(bg_points)} background points")
+            print("Foreground points sample:", fg_points[:5] if fg_points else "No foreground points")
+            print("Background points sample:", bg_points[:5] if bg_points else "No background points")
+            print("Bounding box:", bounding_box if bounding_box else "No bounding box")
+            
+            # Start the segmentation process with points
+            print("Starting segmentation process...")
+            self.segment_worker.run_segmentation(
+                points_prompt=(fg_points, bg_points),
+                bounding_box=bounding_box
+            )
+            print("Segmentation process started")
+            
+            # Process events to ensure UI updates
+            QApplication.processEvents()
+        except Exception as e:
+            print(f"Error in handle_segmentation_with_points: {str(e)}")
+            self.progress_bar.setValue(0)  # Reset progress on error
+            self.progress_bar.setVisible(False)  # Hide on error
+            # Clean up if there's an error
+            self.current_editing_polygon = None
+            QApplication.processEvents()  # Process events to ensure UI updates
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
