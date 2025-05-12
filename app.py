@@ -7,6 +7,7 @@ from ZoomableGraphicsView import ZoomableGraphicsView
 from SegmentationWorker import SegmentationFromPromptService, MaskGenerationService
 from artifact_polygon_item import ArtifactPolygonItem
 from svg_exporter import export_scene_to_svg
+from geospatial_handler import GeospatialHandler
 
 import numpy as np
 import sys
@@ -26,6 +27,9 @@ class MainWindow(QMainWindow):
 
         # Initialize mode
         self.current_mode = ViewerMode.NORMAL
+
+        # Initialize geospatial handler
+        self.geospatial_handler = GeospatialHandler()
 
         # Track if a GeoTIFF is loaded
         self.is_geotiff_loaded = False
