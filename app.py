@@ -8,6 +8,7 @@ from SegmentationWorker import SegmentationFromPromptService, MaskGenerationServ
 from artifact_polygon_item import ArtifactPolygonItem
 from svg_exporter import export_scene_to_svg
 from geospatial_handler import GeospatialHandler
+from geopackage_exporter import export_scene_to_geopackage
 
 import numpy as np
 import sys
@@ -59,6 +60,11 @@ class MainWindow(QMainWindow):
         self.export_svg_button.clicked.connect(self.export_svg)
         self.export_svg_button.setEnabled(False)
         self.toolbar.addWidget(self.export_svg_button)
+
+        self.export_gpkg_button = QPushButton("Export as GeoPackage")
+        self.export_gpkg_button.clicked.connect(self.export_geopackage)
+        self.export_gpkg_button.setEnabled(False)
+        self.toolbar.addWidget(self.export_gpkg_button)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -499,7 +505,7 @@ class MainWindow(QMainWindow):
         # Enable/disable export buttons based on artifact count and GeoTIFF status
         has_artifacts = artifact_count > 0
         self.export_svg_button.setEnabled(has_artifacts)
-        #self.export_gpkg_button.setEnabled(has_artifacts and self.is_geotiff_loaded)
+        self.export_gpkg_button.setEnabled(has_artifacts and self.is_geotiff_loaded)
 
     def update_brush_size(self, value):
         """Update the brush size based on the slider value."""
@@ -789,6 +795,15 @@ class MainWindow(QMainWindow):
         self.toggle_brush_fill_mode(False)
         self.toggle_click_to_detect_mode(False)
         export_scene_to_svg(self, self.scene)
+
+    def export_geopackage(self):
+        """Export the scene to a GeoPackage file."""
+        try:
+            export_scene_to_geopackage(self, self.scene, self.geospatial_handler)
+        except ValueError as e:
+            print(f"Error exporting to GeoPackage: {str(e)}")
+            # Show error message to user
+            QMessageBox.critical(self, "Export Error", str(e))
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
