@@ -6,6 +6,7 @@ from ArtifactGraphicsScene import ArtifactGraphicsScene
 from ZoomableGraphicsView import ZoomableGraphicsView
 from SegmentationWorker import SegmentationFromPromptService, MaskGenerationService
 from artifact_polygon_item import ArtifactPolygonItem
+from svg_exporter import export_scene_to_svg
 
 import numpy as np
 import sys
@@ -49,6 +50,11 @@ class MainWindow(QMainWindow):
         self.reset_button.clicked.connect(self.view.reset_view)
         self.reset_button.setEnabled(False)
         self.toolbar.addWidget(self.reset_button)
+
+        self.export_svg_button = QPushButton("Export as SVG")
+        self.export_svg_button.clicked.connect(self.export_svg)
+        self.export_svg_button.setEnabled(False)
+        self.toolbar.addWidget(self.export_svg_button)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -368,6 +374,9 @@ class MainWindow(QMainWindow):
             # Update shape count
             self.update_shape_count()
 
+            # Enable export button
+            self.export_svg_button.setEnabled(True)
+
         finally:
             self.scene.blockSignals(False)
             self.attributes_table.blockSignals(False)
@@ -485,7 +494,7 @@ class MainWindow(QMainWindow):
         
         # Enable/disable export buttons based on artifact count and GeoTIFF status
         has_artifacts = artifact_count > 0
-        #self.export_svg_button.setEnabled(has_artifacts)
+        self.export_svg_button.setEnabled(has_artifacts)
         #self.export_gpkg_button.setEnabled(has_artifacts and self.is_geotiff_loaded)
 
     def update_brush_size(self, value):
@@ -771,6 +780,11 @@ class MainWindow(QMainWindow):
         
         # Unblock scene signals
         self.scene.blockSignals(False)
+
+    def export_svg(self):
+        self.toggle_brush_fill_mode(False)
+        self.toggle_click_to_detect_mode(False)
+        export_scene_to_svg(self, self.scene)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
