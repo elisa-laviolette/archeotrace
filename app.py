@@ -36,6 +36,8 @@ class MainWindow(QMainWindow):
         # Connect the segmentation request signals to the segmentation methods
         self.scene.segmentation_validation_requested.connect(self.validate_segmentation)
         self.scene.segmentation_preview_requested.connect(self.preview_segmentation)
+        self.scene.segmentation_from_paint_data_requested.connect(self.handle_segmentation_from_paint_data)
+        self.scene.segmentation_with_points_requested.connect(self.handle_segmentation_with_points)
 
         # Create toolbar
         self.toolbar = QToolBar()
@@ -103,8 +105,42 @@ class MainWindow(QMainWindow):
         self.clickDetectBtn.toggled.connect(self.toggle_click_to_detect_mode)
         toolLayout.addWidget(self.clickDetectBtn)
 
+        self.brush_fill_mode = False
+        self.brushFillBtn = QPushButton("Brush Fill to Detect Artifact")
+        self.brushFillBtn.setCheckable(True)
+        self.brushFillBtn.setEnabled(False)  # Disabled until image is loaded
+        self.brushFillBtn.toggled.connect(self.toggle_brush_fill_mode)
+        toolLayout.addWidget(self.brushFillBtn)
+        
+        self.freeHandBtn = QPushButton("Free-hand Draw Outline")
+        self.freeHandBtn.setCheckable(True)
+        self.freeHandBtn.setEnabled(False)  # Disabled until implemented
+        toolLayout.addWidget(self.freeHandBtn)
+
+        self.multiPointBtn = QPushButton("Multi-Point")
+        self.multiPointBtn.setCheckable(True)
+        self.multiPointBtn.setEnabled(False)  # Disabled until implemented
+        toolLayout.addWidget(self.multiPointBtn)
+
         toolWidget.setLayout(toolLayout)
         addArtifactsToolDock.setWidget(toolWidget)
+
+        # Dock widget for shape modification tools
+        editArtifactsToolDock = QDockWidget("Edit Tools", self)
+        editArtifactsToolDock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, editArtifactsToolDock)
+        
+        toolWidget = QWidget()
+        toolLayout = QVBoxLayout()
+        
+        self.eraserBtn = QPushButton("Eraser Tool")
+        self.eraserBtn.setCheckable(True)
+        self.eraserBtn.setEnabled(False)  # Disabled until image is loaded
+        self.eraserBtn.toggled.connect(self.toggle_eraser_mode)
+        toolLayout.addWidget(self.eraserBtn)
+
+        toolWidget.setLayout(toolLayout)
+        editArtifactsToolDock.setWidget(toolWidget)
 
         viewMenu = self.menuBar().addMenu("View")
         viewMenu.addAction(addArtifactsToolDock.toggleViewAction())
@@ -190,6 +226,8 @@ class MainWindow(QMainWindow):
             self.reset_button.setEnabled(True)
             self.detectAllBtn.setEnabled(True)
             self.clickDetectBtn.setEnabled(True)
+            self.brushFillBtn.setEnabled(True)
+            self.eraserBtn.setEnabled(True)
 
             self.initialize_segmentation_service()
 
@@ -229,7 +267,7 @@ class MainWindow(QMainWindow):
             if polygon_item:
                 self.scene.addItem(polygon_item)
                 self.update_shape_count()
-                self.update_attributes_table()
+                #self.update_attributes_table()
             else:
                 print("Failed to create polygon item")
         except Exception as e:
@@ -280,49 +318,26 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
     def handle_segmentation_complete(self, masks):
-        """Handle the completion of segmentation."""
         print("handle_segmentation_complete called")
         if masks is None:
             print("No masks received")
             return
-            
         print(f"Processing {len(masks)} masks")
-        
-        # Block signals to prevent recursive updates
         self.scene.blockSignals(True)
-        #self.attributes_table.blockSignals(True)
-        
         try:
-            # Process each mask and convert to polygon
             for mask in masks:
                 polygon = self.convert_mask_to_polygon(mask)
                 if polygon:
                     polygon_item = self.create_polygon_item(polygon)
                     if polygon_item:
+                        print("Adding new polygon to scene from segmentation result")
                         self.scene.addItem(polygon_item)
-            
-            # Update the table view immediately
-            #self.update_attributes_table()
-            
-            # Update shape count
-            self.update_shape_count()
-            
-            # Enable export button
-            #self.export_svg_button.setEnabled(True)
-            
         finally:
-            # Unblock signals
             self.scene.blockSignals(False)
-            #self.attributes_table.blockSignals(False)
-        
-        # Hide the progress bar and reset its value
         print("Hiding progress bar in handle_segmentation_complete")
-        self.progress_bar.setValue(0)  # Reset progress value first
-        self.progress_bar.setVisible(False)  # Hide the progress bar
-        
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
         print("handle_segmentation_complete finished")
-        
-        # Process events to ensure UI updates
         QApplication.processEvents()
 
     def handle_segmentation_preview_complete(self, mask):
@@ -348,6 +363,22 @@ class MainWindow(QMainWindow):
         elif self.current_mode == ViewerMode.POINT:
             self.set_mode(ViewerMode.NORMAL)
 
+    def toggle_brush_fill_mode(self, checked):
+        if checked:
+            self.set_mode(ViewerMode.BRUSH)
+        elif self.current_mode == ViewerMode.BRUSH:
+            self.set_mode(ViewerMode.NORMAL)
+
+    def toggle_eraser_mode(self, checked):
+        if checked:
+            if self.segment_worker is None:
+                print("Cannot enable eraser mode: segmentation worker not initialized")
+                self.eraserBtn.setChecked(False)  # Uncheck the button
+                return
+            self.set_mode(ViewerMode.ERASER)
+        elif self.current_mode == ViewerMode.ERASER:
+            self.set_mode(ViewerMode.NORMAL)
+
     def set_mode(self, mode):
         """Set the viewer mode and update the scene mode."""
         self.current_mode = mode
@@ -365,8 +396,8 @@ class MainWindow(QMainWindow):
             self.view.setCursor(Qt.CursorShape.CrossCursor)
             self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.brush_size_slider.setEnabled(False)
-            #self.brushFillBtn.setChecked(False)
-            #self.eraserBtn.setChecked(False)
+            self.brushFillBtn.setChecked(False)
+            self.eraserBtn.setChecked(False)
             # Disable selection for all polygon items
             for item in self.scene.items():
                 if isinstance(item, QGraphicsPolygonItem):
@@ -379,7 +410,7 @@ class MainWindow(QMainWindow):
             self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.brush_size_slider.setEnabled(True)
             self.clickDetectBtn.setChecked(False)
-            #self.eraserBtn.setChecked(False)
+            self.eraserBtn.setChecked(False)
             # Disable selection for all polygon items
             for item in self.scene.items():
                 if isinstance(item, QGraphicsPolygonItem):
@@ -392,7 +423,7 @@ class MainWindow(QMainWindow):
             self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.brush_size_slider.setEnabled(True)
             self.clickDetectBtn.setChecked(False)
-            #self.brushFillBtn.setChecked(False)
+            self.brushFillBtn.setChecked(False)
             # Disable selection for all polygon items
             for item in self.scene.items():
                 if isinstance(item, QGraphicsPolygonItem):
@@ -430,6 +461,7 @@ class MainWindow(QMainWindow):
         contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_KCOS)
         
         if not contours:
+            print("convert_mask_to_polygon: No contours found")
             return None
         
         largest_contour = max(contours, key=cv2.contourArea)
@@ -439,10 +471,11 @@ class MainWindow(QMainWindow):
         
         # Convert to QPolygonF
         points = [QPointF(point[0][0], point[0][1]) for point in approx_contour]
+        print(f"convert_mask_to_polygon: {len(points)} points in polygon")
         return QPolygonF(points)
 
     def create_polygon_item(self, polygon):
-        """Create a new polygon item with proper styling"""
+        print(f"create_polygon_item: polygon with {polygon.count()} points")
         try:
             if not isinstance(polygon, QPolygonF):
                 print("Invalid polygon type")
@@ -491,8 +524,10 @@ class MainWindow(QMainWindow):
         return polygon_item
 
     def handle_segmentation_with_points(self, polygon_item, foreground_points, background_points, polygon_mask=None, bounding_box=None):
-        """Handle segmentation with foreground and background points."""
-        print("Handling segmentation with points request...")
+        print("handle_segmentation_with_points called (from eraser?)")
+        print(f"  Foreground points: {len(foreground_points)}")
+        print(f"  Background points: {len(background_points)}")
+        print(f"  Bounding box: {bounding_box}")
         if self.segment_worker is None:
             print("Error: Segmentation worker is None")
             raise ValueError("Segmentation worker should not be None")
@@ -515,9 +550,8 @@ class MainWindow(QMainWindow):
             print("Foreground points sample:", fg_points[:5] if fg_points else "No foreground points")
             print("Background points sample:", bg_points[:5] if bg_points else "No background points")
             print("Bounding box:", bounding_box if bounding_box else "No bounding box")
-            
+            print("Calling run_segmentation...")
             # Start the segmentation process with points
-            print("Starting segmentation process...")
             self.segment_worker.run_segmentation(
                 points_prompt=(fg_points, bg_points),
                 bounding_box=bounding_box
@@ -533,6 +567,21 @@ class MainWindow(QMainWindow):
             # Clean up if there's an error
             self.current_editing_polygon = None
             QApplication.processEvents()  # Process events to ensure UI updates
+
+    def handle_segmentation_from_paint_data(self, foreground_points):
+        if self.segment_worker is None:
+            raise ValueError("Segmentation worker should not be None")
+
+        # Reset progress bar
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        foreground_points_array = [(point.x(), point.y()) for point in foreground_points]
+        
+        # Start the segmentation process
+        self.segment_worker.run_segmentation(
+            painting_prompt=foreground_points_array
+        )
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

@@ -93,6 +93,8 @@ class ArtifactGraphicsScene(QGraphicsScene):
             self.eraser_points.append(position)
 
     def stop_erasing(self):
+        print("stop_erasing called")
+        print(f"self.current_erasing_polygon at start: {self.current_erasing_polygon}")
         print("Stopping erasing")
         if not self.eraser_points:
             print("No eraser points collected")
@@ -251,6 +253,10 @@ class ArtifactGraphicsScene(QGraphicsScene):
                     for x in range(mask_width):
                         remaining_mask_qimage.setPixelColor(x, y, QColor(255 if remaining_area[y, x] else 0))
                 
+                print("Emitting segmentation_with_points_requested with:")
+                print(f"  Foreground points: {len(foreground_points)}")
+                print(f"  Background points: {len(background_points)}")
+                print(f"  Bounding box: {bounding_box}")
                 # Check if we have a true split by analyzing the components
                 if num_components > 1:
                     # Get the area of each component
