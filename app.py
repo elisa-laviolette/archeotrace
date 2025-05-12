@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView, QScroller, QPushButton, QDockWidget, QGraphicsPolygonItem, QSlider, QProgressBar, QTableWidget, QTableWidgetItem
+from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView, QScroller, QPushButton, QDockWidget, QGraphicsPolygonItem, QSlider, QProgressBar, QTableWidget, QTableWidgetItem, QMessageBox
 from PyQt6.QtGui import QAction, QPixmap, QImage, QPainter, QPolygonF, QPen, QColor, QBrush
 from PyQt6.QtCore import Qt, QPointF
 from viewer_mode import ViewerMode
