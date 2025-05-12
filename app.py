@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView, QScroller, QPushButton, QDockWidget, QGraphicsPolygonItem, QSlider, QProgressBar
+from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView, QScroller, QPushButton, QDockWidget, QGraphicsPolygonItem, QSlider, QProgressBar, QTableWidget, QTableWidgetItem
 from PyQt6.QtGui import QAction, QPixmap, QImage, QPainter, QPolygonF, QPen, QColor, QBrush
 from PyQt6.QtCore import Qt, QPointF
 from viewer_mode import ViewerMode
@@ -29,15 +29,12 @@ class MainWindow(QMainWindow):
         # Track if a GeoTIFF is loaded
         self.is_geotiff_loaded = False
 
+        # Track selected polygon
+        self.selected_polygon = None
+
         # Initialize segment_worker
         self.segment_worker = None
         self.mask_gen_service = None
-
-        # Connect the segmentation request signals to the segmentation methods
-        self.scene.segmentation_validation_requested.connect(self.validate_segmentation)
-        self.scene.segmentation_preview_requested.connect(self.preview_segmentation)
-        self.scene.segmentation_from_paint_data_requested.connect(self.handle_segmentation_from_paint_data)
-        self.scene.segmentation_with_points_requested.connect(self.handle_segmentation_with_points)
 
         # Create toolbar
         self.toolbar = QToolBar()
@@ -132,6 +129,11 @@ class MainWindow(QMainWindow):
         
         toolWidget = QWidget()
         toolLayout = QVBoxLayout()
+
+        self.delete_button = QPushButton("Delete Selected Artifact")
+        self.delete_button.setEnabled(False)  # Disabled until something is selected
+        self.delete_button.clicked.connect(self.delete_selected)
+        toolLayout.addWidget(self.delete_button)
         
         self.eraserBtn = QPushButton("Eraser Tool")
         self.eraserBtn.setCheckable(True)
@@ -153,6 +155,31 @@ class MainWindow(QMainWindow):
         self.brush_size_slider.setEnabled(False)  # Disable initially
         self.brush_size_slider.valueChanged.connect(self.update_brush_size)  # Connect slider value change
         main_layout.addWidget(self.brush_size_slider)
+
+        # Add table view for attributes
+        self.attributes_table = QTableWidget()
+        self.attributes_table.setColumnCount(2)
+        self.attributes_table.setHorizontalHeaderLabels(["ID", "Attribute"])
+        self.attributes_table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked)  # Enable editing on double click
+        self.attributes_table.itemChanged.connect(self.handle_attribute_edit)  # Use itemChanged instead of cellChanged
+        self.attributes_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+
+        # Create dock widget for the table
+        dock = QDockWidget("Artifact Attributes", self)
+        dock.setWidget(self.attributes_table)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+
+        # Connect the segmentation request signals to the segmentation methods
+        self.scene.segmentation_validation_requested.connect(self.validate_segmentation)
+        self.scene.segmentation_preview_requested.connect(self.preview_segmentation)
+        self.scene.segmentation_from_paint_data_requested.connect(self.handle_segmentation_from_paint_data)
+        self.scene.segmentation_with_points_requested.connect(self.handle_segmentation_with_points)
+
+        # Connect selection change signal
+        self.scene.selectionChanged.connect(self.update_delete_button)
+        self.scene.selectionChanged.connect(self.handle_scene_selection_changed)
+        self.attributes_table.itemSelectionChanged.connect(self.handle_table_selection)
+        self.scene.attribute_changed.connect(self.update_attributes_table)
 
         self.show()
 
@@ -230,6 +257,7 @@ class MainWindow(QMainWindow):
             self.eraserBtn.setEnabled(True)
 
             self.initialize_segmentation_service()
+            self.update_shape_count()
 
     def initialize_segmentation_service(self):
         """Initialize the segmentation service and connect signals."""
@@ -267,7 +295,7 @@ class MainWindow(QMainWindow):
             if polygon_item:
                 self.scene.addItem(polygon_item)
                 self.update_shape_count()
-                #self.update_attributes_table()
+                self.update_attributes_table()
             else:
                 print("Failed to create polygon item")
         except Exception as e:
@@ -324,6 +352,7 @@ class MainWindow(QMainWindow):
             return
         print(f"Processing {len(masks)} masks")
         self.scene.blockSignals(True)
+        self.attributes_table.blockSignals(True)
         try:
             for mask in masks:
                 polygon = self.convert_mask_to_polygon(mask)
@@ -332,8 +361,17 @@ class MainWindow(QMainWindow):
                     if polygon_item:
                         print("Adding new polygon to scene from segmentation result")
                         self.scene.addItem(polygon_item)
+
+            # Update the table view immediately
+            self.update_attributes_table()
+                
+            # Update shape count
+            self.update_shape_count()
+
         finally:
             self.scene.blockSignals(False)
+            self.attributes_table.blockSignals(False)
+
         print("Hiding progress bar in handle_segmentation_complete")
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
@@ -582,6 +620,157 @@ class MainWindow(QMainWindow):
         self.segment_worker.run_segmentation(
             painting_prompt=foreground_points_array
         )
+
+    def delete_selected(self):
+        """Delete selected polygons and update the table view."""
+        selected_items = self.scene.selectedItems()
+        if not selected_items:
+            return
+            
+        # Block signals to prevent recursive updates
+        self.scene.blockSignals(True)
+        self.attributes_table.blockSignals(True)
+        
+        try:
+            # Remove items from scene
+            for item in selected_items:
+                if isinstance(item, ArtifactPolygonItem):
+                    # Remove text item and background if they exist
+                    if item.text_item and item.text_item.scene():
+                        self.scene.removeItem(item.text_item)
+                    if item.background_item and item.background_item.scene():
+                        self.scene.removeItem(item.background_item)
+                    # Remove the polygon itself
+                    self.scene.removeItem(item)
+            
+            # Update the table view
+            self.update_attributes_table()
+            
+            # Update the shape count
+            self.update_shape_count()
+            
+            # Disable delete button
+            self.delete_button.setEnabled(False)
+            
+        finally:
+            # Unblock signals
+            self.scene.blockSignals(False)
+            self.attributes_table.blockSignals(False)
+            
+        # Process events to ensure UI updates
+        QApplication.processEvents()
+
+    def update_delete_button(self):
+        selected_items = self.scene.selectedItems()
+        self.delete_button.setEnabled(len(selected_items) > 0)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Backspace or event.key() == Qt.Key.Key_Delete:
+            self.delete_selected()
+            self.update_shape_count()
+        super().keyPressEvent(event)
+
+    def handle_attribute_edit(self, item):
+        """Handle editing of attribute values in the table"""
+        if item.column() != 1:  # Only handle changes in the Attribute column
+            return
+            
+        try:
+            # Get the new value
+            new_value = item.text()
+            
+            # Find the corresponding polygon item
+            polygon_items = [item for item in self.scene.items() if isinstance(item, ArtifactPolygonItem)]
+            row = item.row()
+            if row < len(polygon_items):
+                polygon_item = polygon_items[row]
+                polygon_item.set_text_attribute(new_value)
+        except Exception as e:
+            print(f"Error handling attribute edit: {str(e)}")
+
+    def update_attributes_table(self):
+        """Update the attributes table with all polygon items and their attributes"""
+        # Block signals temporarily to prevent recursive updates
+        self.attributes_table.blockSignals(True)
+        
+        try:
+            # Clear the table
+            self.attributes_table.setRowCount(0)
+            
+            # Get all polygon items
+            polygon_items = [item for item in self.scene.items() if isinstance(item, ArtifactPolygonItem)]
+            
+            # Add rows for each polygon
+            for i, item in enumerate(polygon_items):
+                row = self.attributes_table.rowCount()
+                self.attributes_table.insertRow(row)
+                
+                # Set ID
+                id_item = QTableWidgetItem(str(i))
+                id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make ID non-editable
+                self.attributes_table.setItem(row, 0, id_item)
+                
+                # Set attribute
+                self.attributes_table.setItem(row, 1, QTableWidgetItem(item.text_attribute))
+                
+        finally:
+            # Unblock signals
+            self.attributes_table.blockSignals(False)
+
+    def handle_scene_selection_changed(self):
+        """Handle changes in scene selection to update table selection."""
+        # Get selected polygon items
+        selected_items = [item for item in self.scene.selectedItems() if isinstance(item, ArtifactPolygonItem)]
+        
+        # Block signals to prevent recursive updates
+        self.attributes_table.blockSignals(True)
+        
+        # Clear current table selection
+        self.attributes_table.clearSelection()
+        
+        if selected_items:
+            # Get all polygon items to find the indices
+            polygon_items = [item for item in self.scene.items() if isinstance(item, ArtifactPolygonItem)]
+            
+            # Select all corresponding rows in the table
+            for i, item in enumerate(polygon_items):
+                if item in selected_items:
+                    self.attributes_table.selectRow(i)
+        
+        # Unblock signals
+        self.attributes_table.blockSignals(False)
+
+    def handle_table_selection(self):
+        """Handle selection of rows in the attributes table."""
+        # Block scene selection signals to prevent recursive updates
+        self.scene.blockSignals(True)
+        
+        # Get all selected rows
+        selected_rows = set(item.row() for item in self.attributes_table.selectedItems())
+        if not selected_rows:
+            self.scene.blockSignals(False)
+            return
+            
+        # Get all polygon items from the scene
+        polygon_items = [item for item in self.scene.items() if isinstance(item, ArtifactPolygonItem)]
+        
+        # Clear current selection
+        for item in polygon_items:
+            item.setSelected(False)
+            
+        # Select all corresponding polygons
+        for row in selected_rows:
+            if row < len(polygon_items):
+                polygon_items[row].setSelected(True)
+                # Center view on the last selected polygon
+                if row == max(selected_rows):
+                    self.view.centerOn(polygon_items[row])
+            
+        # Update delete button state
+        self.update_delete_button()
+        
+        # Unblock scene signals
+        self.scene.blockSignals(False)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
