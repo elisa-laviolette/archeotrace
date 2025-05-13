@@ -21,12 +21,7 @@ cd archeotrace
 python -m venv venv
 venv\Scripts\activate
 
-# Install GDAL
-# Download and install GDAL wheel from: https://www.lfd.uci.edu/~gohlke/pythonlibs/#gdal
-# Choose the version matching your Python version (e.g., GDAL‑3.11.0‑cp39‑cp39‑win_amd64.whl for Python 3.9)
-pip install [downloaded-gdal-wheel-file]
-
-# Install other requirements
+# Install requirements
 pip install -r requirements.txt
 
 # Download the SAM model file
@@ -88,7 +83,6 @@ python app.py
 # Install system dependencies
 sudo apt-get update
 sudo apt-get install python3-venv python3-pip git
-sudo apt-get install gdal-bin libgdal-dev
 
 # Clone the repository
 git clone [repository-url]
@@ -119,13 +113,9 @@ After installation, you can verify that everything is set up correctly by runnin
 python --version  # Should show Python 3.8 or later
 ```
 
-### Check GDAL Installation
+### Check Rasterio Installation
 ```bash
-# Windows
-python -c "from osgeo import gdal; print(gdal.__version__)"  # Should show 3.11.0
-
-# macOS/Linux
-gdalinfo --version  # Should show GDAL 3.11.0
+python -c "import rasterio; print(rasterio.__version__)"  # Should show the installed version
 ```
 
 ### Check PyQt6 Installation
@@ -158,9 +148,14 @@ If any of these checks fail, please refer to the Troubleshooting section below.
 
 ### Common Issues
 
-1. **GDAL Installation Issues**
-   - Windows: Make sure to download the correct wheel file matching your Python version
-   - Linux: Ensure GDAL is properly installed at the system level first
+1. **Rasterio Installation Issues**
+   - If rasterio fails to install, try installing it separately:
+     ```bash
+     pip install rasterio
+     ```
+   - Additional system dependencies might be needed:
+     - macOS: `brew install gdal`
+     - Linux: `sudo apt-get install gdal-bin libgdal-dev`
 
 2. **PyQt6 Issues**
    - If PyQt6 fails to install, try installing it separately:
