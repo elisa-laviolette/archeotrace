@@ -231,7 +231,7 @@ class MainWindow(QMainWindow):
                 print("File is a GeoTIFF, attempting to load with GDAL...")
                 try:
                     # Load GeoTIFF and get its metadata
-                    image_array = self.geospatial_handler.load_geotiff(file_path)
+                    image_array = self.geospatial_handler.load_geotiff(file_path, self)
                     print("Successfully loaded GeoTIFF with GDAL")
                     print(f"Transform: {self.geospatial_handler.transform}")
                     print(f"CRS: {self.geospatial_handler.crs}")
@@ -249,6 +249,11 @@ class MainWindow(QMainWindow):
                         qimage = QImage(image_array.data, width, height, bytes_per_line, QImage.Format.Format_Grayscale8)
                     self.pixmap = QPixmap.fromImage(qimage)
                     
+                    # Debug CRS information
+                    print(f"CRS type: {type(self.geospatial_handler.crs)}")
+                    print(f"CRS string: {self.geospatial_handler.crs}")
+                    print(f"Transform type: {type(self.geospatial_handler.transform)}")
+                    print(f"Transform: {self.geospatial_handler.transform}")
                     print("GeoPackage export button enabled")
                 except Exception as e:
                     print(f"Error loading GeoTIFF: {str(e)}")
@@ -505,7 +510,14 @@ class MainWindow(QMainWindow):
         # Enable/disable export buttons based on artifact count and GeoTIFF status
         has_artifacts = artifact_count > 0
         self.export_svg_button.setEnabled(has_artifacts)
-        self.export_gpkg_button.setEnabled(has_artifacts and self.is_geotiff_loaded)
+        
+        # Debug button enabling logic
+        print(f"update_shape_count: has_artifacts={has_artifacts}, is_geotiff_loaded={self.is_geotiff_loaded}")
+        print(f"update_shape_count: export_gpkg_button enabled={has_artifacts and self.is_geotiff_loaded}")
+        
+        # Enable GeoPackage export if GeoTIFF is loaded, regardless of artifacts (for testing)
+        # The user can still try to export even if no artifacts are detected
+        self.export_gpkg_button.setEnabled(self.is_geotiff_loaded)
 
     def update_brush_size(self, value):
         """Update the brush size based on the slider value."""
@@ -798,6 +810,10 @@ class MainWindow(QMainWindow):
 
     def export_geopackage(self):
         """Export the scene to a GeoPackage file."""
+        print(f"export_geopackage called: is_geotiff_loaded={self.is_geotiff_loaded}")
+        print(f"export_geopackage: transform={self.geospatial_handler.transform}")
+        print(f"export_geopackage: crs={self.geospatial_handler.crs}")
+        
         try:
             export_scene_to_geopackage(self, self.scene, self.geospatial_handler)
         except ValueError as e:

@@ -12,6 +12,9 @@ def export_scene_to_geopackage(parent, scene, geospatial_handler):
         scene: The QGraphicsScene containing the polygons
         geospatial_handler: GeospatialHandler instance with loaded GeoTIFF metadata
     """
+    print(f"export_scene_to_geopackage: transform={geospatial_handler.transform}")
+    print(f"export_scene_to_geopackage: crs={geospatial_handler.crs}")
+    
     if not geospatial_handler.transform:
         raise ValueError("No geospatial metadata available. Load a GeoTIFF first.")
     
@@ -32,6 +35,15 @@ def export_scene_to_geopackage(parent, scene, geospatial_handler):
         for item in scene.items():
             if isinstance(item, ArtifactPolygonItem):
                 polygon_items.append(item)
+        
+        print(f"Found {len(polygon_items)} polygon items to export")
+        
+        if not polygon_items:
+            print("No artifacts found to export")
+            # Show a message to the user
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(parent, "Export Info", "No artifacts found to export.")
+            return
         
         # Export to GeoPackage
         geospatial_handler.export_to_geopackage(polygon_items, file_name) 
