@@ -7,7 +7,6 @@ from PyQt6.QtCore import QPointF
 from PyQt6.QtGui import QPolygonF, QImage
 from artifact_polygon_item import ArtifactPolygonItem
 import fiona
-from fiona.crs import from_epsg
 
 class GeospatialHandler:
     def __init__(self):
@@ -106,11 +105,6 @@ class GeospatialHandler:
             raise ValueError("No CRS available. Load a GeoTIFF first.")
         
         try:
-            # Get EPSG code from CRS
-            epsg_code = self.crs.to_epsg()
-            if epsg_code is None:
-                raise ValueError("Could not determine EPSG code from CRS")
-            
             # Create schema for the GeoPackage
             schema = {
                 'geometry': 'Polygon',
@@ -119,12 +113,12 @@ class GeospatialHandler:
                 }
             }
             
-            # Create the GeoPackage
+            # Create the GeoPackage - use CRS directly instead of trying to get EPSG code
             with fiona.open(
                 output_path,
                 'w',
                 driver='GPKG',
-                crs=from_epsg(epsg_code),
+                crs=self.crs,
                 schema=schema,
                 layer=layer_name
             ) as dst:
