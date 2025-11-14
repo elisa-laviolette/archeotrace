@@ -6,6 +6,13 @@
 - At least 5GB of free disk space
 - Internet connection for downloading dependencies and model file
 
+## Pre-built Executables
+
+If you prefer not to install dependencies manually, pre-built executables are available for both Windows and macOS. Download them from [https://sharedocs.huma-num.fr/wl/?id=0FJIjTFMA6RLFjPpQduCwqMte3ywRGNt](https://sharedocs.huma-num.fr/wl/?id=0FJIjTFMA6RLFjPpQduCwqMte3ywRGNt). The archive contains only the `ArcheoTrace.exe` and `ArcheoTrace.app` bundles, so use the following steps:
+
+- **Windows**: unzip the archive, double-click `ArcheoTrace.exe`, and allow the OS to trust the executable if prompted.
+- **macOS**: unzip the archive, move `ArcheoTrace.app` into `/Applications` (optional), right-click → Open the first time to bypass Gatekeeper, then launch normally.
+
 ## Installation Instructions
 
 ### Windows
