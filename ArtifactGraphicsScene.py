@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal, QRectF
 from viewer_mode import ViewerMode
 import numpy as np
 from scipy import ndimage
+import cv2
 
 class ArtifactGraphicsScene(QGraphicsScene):
     attribute_changed = pyqtSignal()  # Signal emitted when a polygon's attribute changes
@@ -17,12 +18,17 @@ class ArtifactGraphicsScene(QGraphicsScene):
         self.current_erasing_polygon = None  # Track which polygon we're currently erasing
         self.eraser_points = []  # Store eraser path points
         self.test_mode = False  # Flag for test mode
+        # Free-hand drawing state
+        self.freehand_points = []  # Store free-hand drawing points
+        self.freehand_path = None  # QPainterPath for visual feedback
+        self.freehand_item = None  # QGraphicsPathItem for visual feedback
 
     # Define signals for segmentation requests
     segmentation_validation_requested = pyqtSignal()
     segmentation_preview_requested = pyqtSignal(QPointF)
     segmentation_from_paint_data_requested = pyqtSignal(list)
     segmentation_with_points_requested = pyqtSignal(object, list, list, QImage, list)  # (polygon_item, foreground_points, background_points, polygon_mask, bounding_box)
+    freehand_polygon_created = pyqtSignal(QPolygonF)  # Signal for direct polygon creation from free-hand drawing
 
     def mousePressEvent(self, event):
         if self.current_mode == ViewerMode.BRUSH and event.button() == Qt.MouseButton.LeftButton:
@@ -35,6 +41,9 @@ class ArtifactGraphicsScene(QGraphicsScene):
         elif self.current_mode == ViewerMode.ERASER and event.button() == Qt.MouseButton.LeftButton:
             self.start_erasing(event.scenePos())
             return
+        elif self.current_mode == ViewerMode.FREEHAND and event.button() == Qt.MouseButton.LeftButton:
+            self.start_freehand_drawing(event.scenePos())
+            return
         
         super().mousePressEvent(event)
 
@@ -46,6 +55,8 @@ class ArtifactGraphicsScene(QGraphicsScene):
             self.segmentation_preview_requested.emit(event.scenePos())
         elif self.current_mode == ViewerMode.ERASER and event.buttons() & Qt.MouseButton.LeftButton:
             self.erase(event.scenePos())
+        elif self.current_mode == ViewerMode.FREEHAND and event.buttons() & Qt.MouseButton.LeftButton:
+            self.continue_freehand_drawing(event.scenePos())
             
         super().mouseMoveEvent(event)
 
@@ -55,6 +66,8 @@ class ArtifactGraphicsScene(QGraphicsScene):
             self.stop_painting()
         elif self.current_mode == ViewerMode.ERASER and event.button() == Qt.MouseButton.LeftButton:
             self.stop_erasing()
+        elif self.current_mode == ViewerMode.FREEHAND and event.button() == Qt.MouseButton.LeftButton:
+            self.finish_freehand_drawing()
         super().mouseReleaseEvent(event)
 
     def start_painting(self, position):
@@ -446,6 +459,9 @@ class ArtifactGraphicsScene(QGraphicsScene):
             self.eraser_item = None
             self.eraser_path = None
             self.eraser_points = []
+        
+        # Clean up free-hand drawing items
+        self.cleanup_freehand_drawing()
 
     def set_brush_size(self, size):
         """Set the brush size for painting."""
@@ -476,6 +492,91 @@ class ArtifactGraphicsScene(QGraphicsScene):
 
         # Emit signal for segmentation request
         self.segmentation_from_paint_data_requested.emit(foreground_points)
+
+    def start_freehand_drawing(self, position):
+        """Start free-hand drawing by initializing the path and points list."""
+        self.freehand_points = [position]
+        self.freehand_path = QPainterPath()
+        self.freehand_path.moveTo(position)
+        # Create visual feedback with a visible pen
+        pen = QPen(QColor(0, 255, 0, 200), 2)  # Green semi-transparent line
+        self.freehand_item = self.addPath(self.freehand_path, pen)
+
+    def continue_freehand_drawing(self, position):
+        """Continue free-hand drawing by adding points as the mouse moves."""
+        if not self.freehand_path or not self.freehand_item:
+            return
+        
+        # Only add point if it's significantly different from the last point (to avoid too many points)
+        if self.freehand_points:
+            last_point = self.freehand_points[-1]
+            distance = ((position.x() - last_point.x()) ** 2 + (position.y() - last_point.y()) ** 2) ** 0.5
+            if distance < 2.0:  # Skip points that are too close together
+                return
+        
+        self.freehand_points.append(position)
+        self.freehand_path.lineTo(position)
+        self.freehand_item.setPath(self.freehand_path)
+
+    def finish_freehand_drawing(self):
+        """Finish free-hand drawing by smoothing the path and creating a closed polygon."""
+        if not self.freehand_points or len(self.freehand_points) < 3:
+            # Not enough points to form a polygon
+            self.cleanup_freehand_drawing()
+            return
+        
+        # Remove visual feedback
+        if self.freehand_item:
+            self.removeItem(self.freehand_item)
+            self.freehand_item = None
+        
+        # Apply slight smoothing to reduce jaggedness while preserving all points
+        # Use a simple moving average filter to smooth coordinates without reducing point count
+        if len(self.freehand_points) < 3:
+            smoothed_qpoints = [QPointF(p.x(), p.y()) for p in self.freehand_points]
+        else:
+            # Convert to numpy arrays for smoothing
+            x_coords = np.array([p.x() for p in self.freehand_points], dtype=np.float64)
+            y_coords = np.array([p.y() for p in self.freehand_points], dtype=np.float64)
+            
+            # Apply a simple moving average with a small window (3 points) for slight smoothing
+            # This preserves all points while reducing small jagged movements
+            window_size = 3
+            if len(x_coords) >= window_size:
+                # Pad the arrays to handle edges
+                x_padded = np.pad(x_coords, (window_size//2, window_size//2), mode='edge')
+                y_padded = np.pad(y_coords, (window_size//2, window_size//2), mode='edge')
+                
+                # Apply moving average
+                x_smoothed = np.convolve(x_padded, np.ones(window_size)/window_size, mode='valid')
+                y_smoothed = np.convolve(y_padded, np.ones(window_size)/window_size, mode='valid')
+                
+                # Convert back to QPointF list
+                smoothed_qpoints = [QPointF(float(x), float(y)) for x, y in zip(x_smoothed, y_smoothed)]
+            else:
+                # Not enough points for smoothing, use original points
+                smoothed_qpoints = [QPointF(p.x(), p.y()) for p in self.freehand_points]
+        
+        # Ensure the polygon is closed by adding the first point at the end if needed
+        if len(smoothed_qpoints) > 0 and smoothed_qpoints[0] != smoothed_qpoints[-1]:
+            smoothed_qpoints.append(smoothed_qpoints[0])
+        
+        # Create QPolygonF from smoothed points
+        polygon = QPolygonF(smoothed_qpoints)
+        
+        # Emit signal to create the polygon artifact
+        self.freehand_polygon_created.emit(polygon)
+        
+        # Clean up
+        self.cleanup_freehand_drawing()
+
+    def cleanup_freehand_drawing(self):
+        """Clean up free-hand drawing state."""
+        if self.freehand_item:
+            self.removeItem(self.freehand_item)
+            self.freehand_item = None
+        self.freehand_path = None
+        self.freehand_points = []
 
     def set_test_mode(self, enabled):
         """Set test mode for testing purposes."""

@@ -1,5 +1,17 @@
 # ArcheoTrace
 
+ArcheoTrace is a tool for detecting and tracing artifacts in archaeological images using AI-powered segmentation and manual drawing tools.
+
+## Features
+
+- **Automatic Artifact Detection**: Detect all artifacts in an image using AI segmentation
+- **Click to Detect**: Click on an artifact to detect and trace its outline
+- **Brush Fill Detection**: Paint over an artifact to detect and trace its outline
+- **Free-hand Drawing**: Draw artifact outlines manually by holding the left mouse button and moving the mouse
+- **Eraser Tool**: Remove parts of detected artifacts
+- **Export Options**: Export artifacts as SVG or GeoPackage (for GeoTIFF images)
+- **Attribute Management**: Add and edit text attributes for each artifact
+
 ## Prerequisites
 - Python 3.8 or later
 - Git
@@ -109,6 +121,67 @@ pip install -r requirements.txt
 
 # Run the application
 python app.py
+```
+
+## Usage
+
+### Loading an Image
+
+1. Click the **"Load Image"** button in the toolbar
+2. Select an image file (PNG, JPEG, TIFF, etc.)
+3. For GeoTIFF files, geographic information will be automatically loaded
+
+### Adding Artifacts
+
+ArcheoTrace provides several methods to add artifacts:
+
+#### Automatic Detection
+- Click **"Detect All Artifacts"** to automatically detect and trace all artifacts in the image using AI segmentation
+
+#### Click to Detect
+1. Click **"Click to Detect Artifact"** to enter click-to-detect mode
+2. Click on an artifact in the image
+3. A preview polygon will appear showing the detected outline
+4. Click again to confirm and create the artifact
+
+#### Brush Fill Detection
+1. Click **"Brush Fill to Detect Artifact"** to enter brush fill mode
+2. Adjust the brush size using the slider at the bottom
+3. Paint over the artifact you want to detect
+4. Release the mouse button to create the artifact
+
+#### Free-hand Drawing
+1. Click **"Free-hand Draw Outline"** to enter free-hand drawing mode
+2. Hold the left mouse button and move the mouse to draw the outline of the artifact
+3. Release the mouse button to complete the drawing
+4. The drawn path will be automatically smoothed and converted into a closed polygon artifact
+
+**Note**: Free-hand drawing preserves all the points from your drawing while applying slight smoothing to reduce jaggedness. This allows for precise manual tracing of artifact outlines. Unlike other detection modes, free-hand drawing does not use the AI segmentation model - it creates artifacts directly from your drawing path.
+
+### Editing Artifacts
+
+- **Select Artifacts**: Click on an artifact to select it (in normal mode)
+- **Delete Artifacts**: Select one or more artifacts and click **"Delete Selected Artifact"** or press Delete/Backspace
+- **Edit Attributes**: Double-click an artifact or edit its attribute in the "Artifact Attributes" table
+- **Eraser Tool**: Use the eraser tool to remove parts of artifacts
+
+### Exporting
+
+- **Export as SVG**: Click **"Export as SVG"** to save artifacts as a Scalable Vector Graphics file
+- **Export as GeoPackage**: For GeoTIFF images, click **"Export as GeoPackage"** to save artifacts with geographic coordinates
+
+## Running Tests
+
+To run the unit tests for the free-hand drawing functionality:
+
+```bash
+python -m unittest test_freehand_drawing.py
+```
+
+Or run all tests (if you have additional test files):
+
+```bash
+python -m unittest discover -s . -p "test_*.py"
 ```
 
 ## Verifying Your Installation

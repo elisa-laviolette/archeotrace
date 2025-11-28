@@ -127,7 +127,8 @@ class MainWindow(QMainWindow):
         
         self.freeHandBtn = QPushButton("Free-hand Draw Outline")
         self.freeHandBtn.setCheckable(True)
-        self.freeHandBtn.setEnabled(False)  # Disabled until implemented
+        self.freeHandBtn.setEnabled(False)  # Disabled until image is loaded
+        self.freeHandBtn.toggled.connect(self.toggle_freehand_mode)
         toolLayout.addWidget(self.freeHandBtn)
 
         self.multiPointBtn = QPushButton("Multi-Point")
@@ -190,6 +191,7 @@ class MainWindow(QMainWindow):
         self.scene.segmentation_preview_requested.connect(self.preview_segmentation)
         self.scene.segmentation_from_paint_data_requested.connect(self.handle_segmentation_from_paint_data)
         self.scene.segmentation_with_points_requested.connect(self.handle_segmentation_with_points)
+        self.scene.freehand_polygon_created.connect(self.handle_freehand_polygon)
 
         # Connect selection change signal
         self.scene.selectionChanged.connect(self.update_delete_button)
@@ -276,6 +278,7 @@ class MainWindow(QMainWindow):
             self.clickDetectBtn.setEnabled(True)
             self.brushFillBtn.setEnabled(True)
             self.eraserBtn.setEnabled(True)
+            self.freeHandBtn.setEnabled(True)
 
             self.initialize_segmentation_service()
             self.update_shape_count()
@@ -441,6 +444,12 @@ class MainWindow(QMainWindow):
         elif self.current_mode == ViewerMode.ERASER:
             self.set_mode(ViewerMode.NORMAL)
 
+    def toggle_freehand_mode(self, checked):
+        if checked:
+            self.set_mode(ViewerMode.FREEHAND)
+        elif self.current_mode == ViewerMode.FREEHAND:
+            self.set_mode(ViewerMode.NORMAL)
+
     def set_mode(self, mode):
         """Set the viewer mode and update the scene mode."""
         self.current_mode = mode
@@ -486,6 +495,21 @@ class MainWindow(QMainWindow):
             self.brush_size_slider.setEnabled(True)
             self.clickDetectBtn.setChecked(False)
             self.brushFillBtn.setChecked(False)
+            self.freeHandBtn.setChecked(False)
+            # Disable selection for all polygon items
+            for item in self.scene.items():
+                if isinstance(item, QGraphicsPolygonItem):
+                    item.setFlag(QGraphicsPolygonItem.GraphicsItemFlag.ItemIsSelectable, False)
+
+        elif mode == ViewerMode.FREEHAND:
+            self.click_to_detect_mode = False
+            self.brush_fill_mode = False
+            self.view.setCursor(Qt.CursorShape.CrossCursor)
+            self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.brush_size_slider.setEnabled(False)
+            self.clickDetectBtn.setChecked(False)
+            self.brushFillBtn.setChecked(False)
+            self.eraserBtn.setChecked(False)
             # Disable selection for all polygon items
             for item in self.scene.items():
                 if isinstance(item, QGraphicsPolygonItem):
@@ -497,6 +521,10 @@ class MainWindow(QMainWindow):
             self.view.setCursor(Qt.CursorShape.ArrowCursor)
             self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.brush_size_slider.setEnabled(False)
+            self.clickDetectBtn.setChecked(False)
+            self.brushFillBtn.setChecked(False)
+            self.eraserBtn.setChecked(False)
+            self.freeHandBtn.setChecked(False)
             # Enable selection for all polygon items
             for item in self.scene.items():
                 if isinstance(item, QGraphicsPolygonItem):
@@ -651,6 +679,22 @@ class MainWindow(QMainWindow):
         self.segment_worker.run_segmentation(
             painting_prompt=foreground_points_array
         )
+
+    def handle_freehand_polygon(self, polygon):
+        """Handle the creation of a polygon from free-hand drawing."""
+        if polygon is None or polygon.count() < 3:
+            print("Invalid polygon from free-hand drawing")
+            return
+        
+        # Create and add the permanent polygon directly (no segmentation needed)
+        polygon_item = self.create_polygon_item(polygon)
+        if polygon_item:
+            self.scene.addItem(polygon_item)
+            self.update_shape_count()
+            self.update_attributes_table()
+            print(f"Created polygon from free-hand drawing with {polygon.count()} points")
+        else:
+            print("Failed to create polygon item from free-hand drawing")
 
     def delete_selected(self):
         """Delete selected polygons and update the table view."""
