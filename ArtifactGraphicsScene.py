@@ -5,6 +5,9 @@ from viewer_mode import ViewerMode
 import numpy as np
 from scipy import ndimage
 import cv2
+from shapely.geometry import Polygon as ShapelyPolygon, Point, LineString
+from shapely.ops import unary_union
+from artifact_polygon_item import ArtifactPolygonItem
 
 class ArtifactGraphicsScene(QGraphicsScene):
     attribute_changed = pyqtSignal()  # Signal emitted when a polygon's attribute changes
@@ -106,33 +109,70 @@ class ArtifactGraphicsScene(QGraphicsScene):
             self.eraser_points.append(position)
 
     def stop_erasing(self):
+        """Stop erasing and process the erased region manually using geometric operations."""
         print("stop_erasing called")
-        print(f"self.current_erasing_polygon at start: {self.current_erasing_polygon}")
-        print("Stopping erasing")
-        if not self.eraser_points:
-            print("No eraser points collected")
+        if not self.eraser_points or len(self.eraser_points) < 2:
+            print("No eraser points collected or not enough points")
+            # Clean up visual feedback
+            if self.eraser_item:
+                self.removeItem(self.eraser_item)
+                self.eraser_item = None
+                self.eraser_path = None
+                self.eraser_points = []
             return
 
         print(f"Collected {len(self.eraser_points)} eraser points")
         
-        # Find polygons that intersect with the eraser path
+        # Find all polygons that intersect with the eraser path
         eraser_bounds = self.eraser_path.boundingRect()
         items_in_bounds = self.items(eraser_bounds)
         
         print(f"Found {len(items_in_bounds)} items in eraser bounds")
         
-        # Find the first polygon that intersects with our eraser path
+        # Find all polygons that intersect with our eraser path
+        polygons_to_erase = []
         for item in items_in_bounds:
-            if isinstance(item, QGraphicsPolygonItem) and item != self.eraser_item:
+            if isinstance(item, ArtifactPolygonItem) and item != self.eraser_item:
+                # Check if eraser path intersects with the polygon
+                polygon = item.polygon()
+                eraser_intersects = False
+                
                 # Check if any eraser point is inside the polygon
                 for point in self.eraser_points:
-                    if item.contains(item.mapFromScene(point)):
-                        print(f"Found polygon to modify (eraser path intersects with polygon)")
-                        self.current_erasing_polygon = item
-                        self.process_erased_region()
+                    if polygon.containsPoint(point, Qt.FillRule.OddEvenFill):
+                        eraser_intersects = True
                         break
-                if self.current_erasing_polygon:  # If we found a polygon, stop searching
-                    break
+                
+                # Also check if eraser path intersects polygon boundary
+                if not eraser_intersects:
+                    # Create a simple path from eraser points to check intersection
+                    eraser_path_simple = QPainterPath()
+                    if self.eraser_points:
+                        eraser_path_simple.moveTo(self.eraser_points[0])
+                        for point in self.eraser_points[1:]:
+                            eraser_path_simple.lineTo(point)
+                    
+                    # Check if the eraser path intersects with the polygon
+                    # by checking if any segment of the eraser path intersects the polygon
+                    for i in range(len(self.eraser_points) - 1):
+                        p1 = self.eraser_points[i]
+                        p2 = self.eraser_points[i + 1]
+                        # Create a line segment
+                        line_path = QPainterPath()
+                        line_path.moveTo(p1)
+                        line_path.lineTo(p2)
+                        # Check if this line segment intersects the polygon
+                        if polygon.intersects(line_path):
+                            eraser_intersects = True
+                            break
+                
+                if eraser_intersects:
+                    print(f"Found polygon to modify (eraser path intersects with polygon)")
+                    polygons_to_erase.append(item)
+
+        if polygons_to_erase:
+            # Process manual erasing for all intersecting polygons
+            self.process_manual_erasing(polygons_to_erase)
         else:
             print("No polygon found intersecting with eraser path")
 
@@ -144,6 +184,201 @@ class ArtifactGraphicsScene(QGraphicsScene):
             self.eraser_path = None
             self.eraser_points = []  # Clear the eraser points list
 
+    def smooth_eraser_path(self):
+        """Apply smoothing to the eraser path similar to freehand mode."""
+        if len(self.eraser_points) < 3:
+            return [QPointF(p.x(), p.y()) for p in self.eraser_points]
+        
+        # Convert to numpy arrays for smoothing
+        x_coords = np.array([p.x() for p in self.eraser_points], dtype=np.float64)
+        y_coords = np.array([p.y() for p in self.eraser_points], dtype=np.float64)
+        
+        # Apply a simple moving average with a small window (3 points) for slight smoothing
+        window_size = 3
+        if len(x_coords) >= window_size:
+            # Pad the arrays to handle edges
+            x_padded = np.pad(x_coords, (window_size//2, window_size//2), mode='edge')
+            y_padded = np.pad(y_coords, (window_size//2, window_size//2), mode='edge')
+            
+            # Apply moving average
+            x_smoothed = np.convolve(x_padded, np.ones(window_size)/window_size, mode='valid')
+            y_smoothed = np.convolve(y_padded, np.ones(window_size)/window_size, mode='valid')
+            
+            # Convert back to QPointF list
+            return [QPointF(float(x), float(y)) for x, y in zip(x_smoothed, y_smoothed)]
+        else:
+            return [QPointF(p.x(), p.y()) for p in self.eraser_points]
+    
+    def eraser_path_to_polygon(self, smoothed_points):
+        """Convert the eraser path to a polygon considering brush size."""
+        if len(smoothed_points) < 2:
+            return None
+        
+        try:
+            # Create a LineString from the smoothed points
+            coords = [(p.x(), p.y()) for p in smoothed_points]
+            line = LineString(coords)
+            
+            # Validate the line
+            if not line.is_valid:
+                line = line.buffer(0)  # Fix invalid geometry
+            
+            # Create a buffer around the line using the brush size
+            # The buffer radius is half the brush size
+            buffer_radius = max(0.5, self.brush_size / 2.0)  # Ensure minimum radius
+            eraser_polygon = line.buffer(buffer_radius, quad_segs=8, cap_style=2, join_style=2)
+            
+            # If the result is a MultiPolygon, union it to get a single polygon
+            if hasattr(eraser_polygon, 'geoms'):
+                # It's a MultiPolygon, union all parts
+                eraser_polygon = unary_union(eraser_polygon.geoms)
+            
+            # Validate the result
+            if eraser_polygon.is_empty or not eraser_polygon.is_valid:
+                print("Invalid eraser polygon created")
+                return None
+            
+            return eraser_polygon
+        except Exception as e:
+            print(f"Error creating eraser polygon: {e}")
+            return None
+    
+    def qpolygonf_to_shapely(self, qpolygon):
+        """Convert QPolygonF to Shapely Polygon."""
+        coords = [(point.x(), point.y()) for point in qpolygon]
+        # Ensure polygon is closed
+        if coords and coords[0] != coords[-1]:
+            coords.append(coords[0])
+        return ShapelyPolygon(coords)
+    
+    def shapely_to_qpolygonf(self, shapely_poly):
+        """Convert Shapely Polygon to QPolygonF."""
+        if shapely_poly.is_empty:
+            return None
+        # Get exterior coordinates
+        coords = list(shapely_poly.exterior.coords)
+        # Remove duplicate last point if present (Shapely includes it)
+        if len(coords) > 1 and coords[0] == coords[-1]:
+            coords = coords[:-1]
+        points = [QPointF(float(x), float(y)) for x, y in coords]
+        return QPolygonF(points)
+    
+    def process_manual_erasing(self, polygons_to_erase):
+        """Process manual erasing using geometric operations."""
+        if not polygons_to_erase or not self.eraser_points:
+            return
+        
+        try:
+            # Smooth the eraser path
+            smoothed_points = self.smooth_eraser_path()
+            if len(smoothed_points) < 2:
+                print("Not enough smoothed points for erasing")
+                return
+            
+            # Convert eraser path to polygon
+            eraser_polygon = self.eraser_path_to_polygon(smoothed_points)
+            if eraser_polygon is None or eraser_polygon.is_empty:
+                print("Could not create eraser polygon")
+                return
+            
+            # Minimum area threshold for keeping polygons (in pixels squared)
+            min_area_threshold = 100.0  # Adjust this value as needed
+            
+            # Process each polygon
+            for polygon_item in polygons_to_erase:
+                original_polygon = polygon_item.polygon()
+                original_text = polygon_item.text_attribute
+                
+                # Convert to Shapely
+                original_shapely = self.qpolygonf_to_shapely(original_polygon)
+                if original_shapely.is_empty:
+                    continue
+                
+                # Perform difference operation
+                try:
+                    result = original_shapely.difference(eraser_polygon)
+                except Exception as e:
+                    print(f"Error performing difference operation: {e}")
+                    continue
+                
+                # Handle the result (could be Polygon or MultiPolygon)
+                result_polygons = []
+                if hasattr(result, 'geoms'):
+                    # It's a MultiPolygon
+                    for geom in result.geoms:
+                        if geom.area >= min_area_threshold:
+                            result_polygons.append(geom)
+                else:
+                    # It's a single Polygon
+                    if result.area >= min_area_threshold:
+                        result_polygons.append(result)
+                
+                # Store the original style before removing the item
+                original_pen = polygon_item.pen()
+                original_brush = polygon_item.brush()
+                
+                # Remove the original polygon (only if we have results, otherwise it's completely erased)
+                if result_polygons:
+                    if polygon_item in self.items():
+                        # Remove text and background items
+                        if polygon_item.text_item and polygon_item.text_item.scene():
+                            self.removeItem(polygon_item.text_item)
+                        if polygon_item.background_item and polygon_item.background_item.scene():
+                            self.removeItem(polygon_item.background_item)
+                        self.removeItem(polygon_item)
+                else:
+                    # Polygon is completely erased or too small - remove it
+                    if polygon_item in self.items():
+                        if polygon_item.text_item and polygon_item.text_item.scene():
+                            self.removeItem(polygon_item.text_item)
+                        if polygon_item.background_item and polygon_item.background_item.scene():
+                            self.removeItem(polygon_item.background_item)
+                        self.removeItem(polygon_item)
+                    print(f"Polygon completely erased or too small (area < {min_area_threshold})")
+                    continue
+                
+                # Create new polygon items from the results
+                # If there are multiple polygons (split), assign random colors to each
+                # If there's only one polygon, keep the original color
+                use_random_colors = len(result_polygons) > 1
+                
+                for result_poly in result_polygons:
+                    qpolygon = self.shapely_to_qpolygonf(result_poly)
+                    if qpolygon and qpolygon.count() >= 3:
+                        # Create new polygon item with same attributes
+                        new_item = ArtifactPolygonItem(qpolygon)
+                        new_item.set_text_attribute(original_text)
+                        
+                        # Assign colors: random if split, original if single
+                        if use_random_colors:
+                            # Generate random color for split polygons
+                            import random
+                            r = random.randint(0, 255)
+                            g = random.randint(0, 255)
+                            b = random.randint(0, 255)
+                            
+                            pen = QPen(QColor(r, g, b))
+                            pen.setWidth(original_pen.width())
+                            new_item.setPen(pen)
+                            
+                            brush = QBrush(QColor(r, g, b, 50))
+                            new_item.setBrush(brush)
+                        else:
+                            # Keep original style for single polygon
+                            new_item.setPen(original_pen)
+                            new_item.setBrush(original_brush)
+                        
+                        self.addItem(new_item)
+                        print(f"Created new polygon with {qpolygon.count()} points, area: {result_poly.area}")
+            
+            # Emit signal to update UI
+            self.attribute_changed.emit()
+                
+        except Exception as e:
+            print(f"Error in process_manual_erasing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
     def process_erased_region(self):
         if not self.current_erasing_polygon or not self.eraser_points:
             print("No polygon or eraser points to process")

@@ -8,7 +8,7 @@ ArcheoTrace is a tool for detecting and tracing artifacts in archaeological imag
 - **Click to Detect**: Click on an artifact to detect and trace its outline
 - **Brush Fill Detection**: Paint over an artifact to detect and trace its outline
 - **Free-hand Drawing**: Draw artifact outlines manually by holding the left mouse button and moving the mouse
-- **Eraser Tool**: Remove parts of detected artifacts
+- **Eraser Tool**: Manually erase parts of detected artifacts by drawing with the eraser
 - **Export Options**: Export artifacts as SVG or GeoPackage (for GeoTIFF images)
 - **Attribute Management**: Add and edit text attributes for each artifact
 
@@ -163,7 +163,17 @@ ArcheoTrace provides several methods to add artifacts:
 - **Select Artifacts**: Click on an artifact to select it (in normal mode)
 - **Delete Artifacts**: Select one or more artifacts and click **"Delete Selected Artifact"** or press Delete/Backspace
 - **Edit Attributes**: Double-click an artifact or edit its attribute in the "Artifact Attributes" table
-- **Eraser Tool**: Use the eraser tool to remove parts of artifacts
+- **Eraser Tool**: 
+  1. Click **"Eraser Tool"** to enter eraser mode
+  2. Adjust the brush size using the slider at the bottom
+  3. Hold the left mouse button and move the mouse to draw over the parts you want to erase
+  4. Release the mouse button to apply the erasing
+  5. The drawn area will be smoothed and removed from intersecting polygons
+  6. Polygons can be completely erased or split into multiple parts
+  7. When a polygon is split, each resulting part gets a different random color
+  8. Very small polygons (less than 100 pixels²) are automatically removed after erasing
+
+**Note**: The eraser tool uses geometric operations to remove drawn areas from polygons. Unlike other editing tools, it does not use the AI segmentation model - it works directly on the polygon geometry. The eraser path is automatically smoothed similar to free-hand drawing to provide a natural erasing experience.
 
 ### Exporting
 
@@ -172,15 +182,16 @@ ArcheoTrace provides several methods to add artifacts:
 
 ## Running Tests
 
-To run the unit tests for the free-hand drawing functionality:
+To run the unit tests:
 
 ```bash
+# Run tests for free-hand drawing
 python -m unittest test_freehand_drawing.py
-```
 
-Or run all tests (if you have additional test files):
+# Run tests for eraser functionality
+python -m unittest test_eraser.py
 
-```bash
+# Run all tests
 python -m unittest discover -s . -p "test_*.py"
 ```
 

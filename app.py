@@ -198,6 +198,7 @@ class MainWindow(QMainWindow):
         self.scene.selectionChanged.connect(self.handle_scene_selection_changed)
         self.attributes_table.itemSelectionChanged.connect(self.handle_table_selection)
         self.scene.attribute_changed.connect(self.update_attributes_table)
+        self.scene.attribute_changed.connect(self.update_shape_count)
 
         self.show()
 
@@ -436,10 +437,6 @@ class MainWindow(QMainWindow):
 
     def toggle_eraser_mode(self, checked):
         if checked:
-            if self.segment_worker is None:
-                print("Cannot enable eraser mode: segmentation worker not initialized")
-                self.eraserBtn.setChecked(False)  # Uncheck the button
-                return
             self.set_mode(ViewerMode.ERASER)
         elif self.current_mode == ViewerMode.ERASER:
             self.set_mode(ViewerMode.NORMAL)
