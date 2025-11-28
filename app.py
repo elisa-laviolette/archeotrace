@@ -707,11 +707,9 @@ class MainWindow(QMainWindow):
             # Remove items from scene
             for item in selected_items:
                 if isinstance(item, ArtifactPolygonItem):
-                    # Remove text item and background if they exist
+                    # Remove text item if it exists
                     if item.text_item and item.text_item.scene():
                         self.scene.removeItem(item.text_item)
-                    if item.background_item and item.background_item.scene():
-                        self.scene.removeItem(item.background_item)
                     # Remove the polygon itself
                     self.scene.removeItem(item)
             

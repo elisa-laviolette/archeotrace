@@ -11,6 +11,12 @@ ArcheoTrace is a tool for detecting and tracing artifacts in archaeological imag
 - **Eraser Tool**: Manually erase parts of detected artifacts by drawing with the eraser
 - **Export Options**: Export artifacts as SVG or GeoPackage (for GeoTIFF images)
 - **Attribute Management**: Add and edit text attributes for each artifact
+- **Smart Labels**: Text labels displayed on artifacts with:
+  - Automatic centering on polygon centroids
+  - Viewport-aware positioning (labels appear in visible portions)
+  - Zoom-based visibility (labels hide when zoomed out too far)
+  - White text outline for readability (similar to QGIS)
+  - Constant size regardless of zoom level
 
 ## Prerequisites
 - Python 3.8 or later
@@ -163,6 +169,11 @@ ArcheoTrace provides several methods to add artifacts:
 - **Select Artifacts**: Click on an artifact to select it (in normal mode)
 - **Delete Artifacts**: Select one or more artifacts and click **"Delete Selected Artifact"** or press Delete/Backspace
 - **Edit Attributes**: Double-click an artifact or edit its attribute in the "Artifact Attributes" table
+  - Text labels automatically appear on artifacts when attributes are set
+  - Labels are centered on the polygon's centroid by default
+  - When only part of a polygon is visible, labels appear in the visible portion
+  - Labels automatically hide when zoomed out too far to prevent clutter
+  - Labels maintain a constant size regardless of zoom level for readability
 - **Eraser Tool**: 
   1. Click **"Eraser Tool"** to enter eraser mode
   2. Adjust the brush size using the slider at the bottom
@@ -190,6 +201,9 @@ python -m unittest test_freehand_drawing.py
 
 # Run tests for eraser functionality
 python -m unittest test_eraser.py
+
+# Run tests for label functionality
+python -m unittest test_labels.py
 
 # Run all tests
 python -m unittest discover -s . -p "test_*.py"

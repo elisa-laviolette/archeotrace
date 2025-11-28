@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QGraphicsView
 from PyQt6.QtCore import Qt, QEvent, QPointF
-from PyQt6.QtGui import QWheelEvent, QPainter
+from PyQt6.QtGui import QWheelEvent, QPainter, QResizeEvent
 
 class ZoomableGraphicsView(QGraphicsView):
     def __init__(self, *args, **kwargs):
@@ -32,6 +32,10 @@ class ZoomableGraphicsView(QGraphicsView):
         cursor_view_pos = self.mapFromScene(cursor_scene_pos)
         self.translate(cursor_view_pos.x() - event.position().x(),
                        cursor_view_pos.y() - event.position().y())
+        
+        # Update label visibility based on zoom
+        if self.scene():
+            self.scene().update_label_visibility()
         
     def event(self, event):
         if event.type() == QEvent.Type.Gesture:
@@ -67,6 +71,10 @@ class ZoomableGraphicsView(QGraphicsView):
                 self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - delta.x()))
                 self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - delta.y()))
                 self.last_pos = center
+                
+                # Update label visibility based on zoom
+                if self.scene():
+                    self.scene().update_label_visibility()
             
             return True
         return False
@@ -77,6 +85,9 @@ class ZoomableGraphicsView(QGraphicsView):
         self.last_pinch_scale = 1.0
         self.resetTransform()
         self.fitInView(self.scene().sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        # Update label visibility based on zoom
+        if self.scene():
+            self.scene().update_label_visibility()
 
     def zoom_in(self):
         """Zoom in by the zoom factor."""
@@ -91,6 +102,10 @@ class ZoomableGraphicsView(QGraphicsView):
         cursor_view_pos = self.mapFromScene(cursor_scene_pos)
         self.translate(cursor_view_pos.x() - center.x(),
                       cursor_view_pos.y() - center.y())
+        
+        # Update label visibility based on zoom
+        if self.scene():
+            self.scene().update_label_visibility()
 
     def zoom_out(self):
         """Zoom out by the inverse of the zoom factor."""
@@ -105,3 +120,21 @@ class ZoomableGraphicsView(QGraphicsView):
         cursor_view_pos = self.mapFromScene(cursor_scene_pos)
         self.translate(cursor_view_pos.x() - center.x(),
                       cursor_view_pos.y() - center.y())
+        
+        # Update label visibility based on zoom
+        if self.scene():
+            self.scene().update_label_visibility()
+    
+    def scrollContentsBy(self, dx, dy):
+        """Override to update labels when view is panned"""
+        super().scrollContentsBy(dx, dy)
+        # Update label visibility when viewport changes
+        if self.scene():
+            self.scene().update_label_visibility()
+    
+    def resizeEvent(self, event: QResizeEvent):
+        """Override to update labels when view is resized"""
+        super().resizeEvent(event)
+        # Update label visibility when viewport size changes
+        if self.scene():
+            self.scene().update_label_visibility()

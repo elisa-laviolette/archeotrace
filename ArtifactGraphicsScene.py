@@ -320,19 +320,15 @@ class ArtifactGraphicsScene(QGraphicsScene):
                 # Remove the original polygon (only if we have results, otherwise it's completely erased)
                 if result_polygons:
                     if polygon_item in self.items():
-                        # Remove text and background items
+                        # Remove text item
                         if polygon_item.text_item and polygon_item.text_item.scene():
                             self.removeItem(polygon_item.text_item)
-                        if polygon_item.background_item and polygon_item.background_item.scene():
-                            self.removeItem(polygon_item.background_item)
                         self.removeItem(polygon_item)
                 else:
                     # Polygon is completely erased or too small - remove it
                     if polygon_item in self.items():
                         if polygon_item.text_item and polygon_item.text_item.scene():
                             self.removeItem(polygon_item.text_item)
-                        if polygon_item.background_item and polygon_item.background_item.scene():
-                            self.removeItem(polygon_item.background_item)
                         self.removeItem(polygon_item)
                     print(f"Polygon completely erased or too small (area < {min_area_threshold})")
                     continue
@@ -816,3 +812,9 @@ class ArtifactGraphicsScene(QGraphicsScene):
     def set_test_mode(self, enabled):
         """Set test mode for testing purposes."""
         self.test_mode = enabled
+    
+    def update_label_visibility(self):
+        """Update visibility of all polygon labels based on current zoom level"""
+        for item in self.items():
+            if isinstance(item, ArtifactPolygonItem):
+                item.update_text_position()
