@@ -6,6 +6,7 @@ from ArtifactGraphicsScene import ArtifactGraphicsScene
 from ZoomableGraphicsView import ZoomableGraphicsView
 from SegmentationWorker import SegmentationFromPromptService, MaskGenerationService
 from artifact_polygon_item import ArtifactPolygonItem
+from editable_polygon_item import EditablePolygonItem
 from svg_exporter import export_scene_to_svg
 from geospatial_handler import GeospatialHandler
 from geopackage_exporter import export_scene_to_geopackage
@@ -25,6 +26,8 @@ class MainWindow(QMainWindow):
         # Create graphics scene and view
         self.scene = ArtifactGraphicsScene()
         self.view = ZoomableGraphicsView(self.scene)
+        # Store reference to main window in view for key event handling
+        self.view.main_window = self
 
         # Initialize mode
         self.current_mode = ViewerMode.NORMAL
@@ -78,6 +81,8 @@ class MainWindow(QMainWindow):
         self.view.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Set focus policy so main window can receive keyboard events
+        self.view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         main_layout.addWidget(self.view)
 
         # Enable touch gestures
@@ -158,6 +163,17 @@ class MainWindow(QMainWindow):
         self.eraserBtn.toggled.connect(self.toggle_eraser_mode)
         toolLayout.addWidget(self.eraserBtn)
 
+        self.editModeBtn = QPushButton("Edit Mode")
+        self.editModeBtn.setCheckable(True)
+        self.editModeBtn.setEnabled(False)  # Disabled until image is loaded
+        self.editModeBtn.toggled.connect(self.toggle_edit_mode)
+        toolLayout.addWidget(self.editModeBtn)
+
+        self.delete_nodes_button = QPushButton("Delete Selected Nodes")
+        self.delete_nodes_button.setEnabled(False)  # Disabled until nodes are selected
+        self.delete_nodes_button.clicked.connect(self.delete_selected_nodes)
+        toolLayout.addWidget(self.delete_nodes_button)
+
         toolWidget.setLayout(toolLayout)
         editArtifactsToolDock.setWidget(toolWidget)
 
@@ -199,6 +215,7 @@ class MainWindow(QMainWindow):
         self.attributes_table.itemSelectionChanged.connect(self.handle_table_selection)
         self.scene.attribute_changed.connect(self.update_attributes_table)
         self.scene.attribute_changed.connect(self.update_shape_count)
+        self.scene.attribute_changed.connect(self.update_delete_nodes_button)
 
         self.show()
 
@@ -280,6 +297,7 @@ class MainWindow(QMainWindow):
             self.brushFillBtn.setEnabled(True)
             self.eraserBtn.setEnabled(True)
             self.freeHandBtn.setEnabled(True)
+            self.editModeBtn.setEnabled(True)
 
             self.initialize_segmentation_service()
             self.update_shape_count()
@@ -319,6 +337,12 @@ class MainWindow(QMainWindow):
             polygon_item = self.create_polygon_item(polygon)
             if polygon_item:
                 self.scene.addItem(polygon_item)
+                # If in edit mode, convert to editable
+                if self.current_mode == ViewerMode.EDIT:
+                    self.scene.convert_to_editable(polygon_item)
+                    editable = self.scene.editable_polygons.get(polygon_item)
+                    if editable:
+                        editable.set_editing_mode(True)
                 self.update_shape_count()
                 self.update_attributes_table()
             else:
@@ -386,6 +410,12 @@ class MainWindow(QMainWindow):
                     if polygon_item:
                         print("Adding new polygon to scene from segmentation result")
                         self.scene.addItem(polygon_item)
+                        # If in edit mode, convert to editable
+                        if self.current_mode == ViewerMode.EDIT:
+                            self.scene.convert_to_editable(polygon_item)
+                            editable = self.scene.editable_polygons.get(polygon_item)
+                            if editable:
+                                editable.set_editing_mode(True)
 
             # Update the table view immediately
             self.update_attributes_table()
@@ -445,6 +475,12 @@ class MainWindow(QMainWindow):
         if checked:
             self.set_mode(ViewerMode.FREEHAND)
         elif self.current_mode == ViewerMode.FREEHAND:
+            self.set_mode(ViewerMode.NORMAL)
+
+    def toggle_edit_mode(self, checked):
+        if checked:
+            self.set_mode(ViewerMode.EDIT)
+        elif self.current_mode == ViewerMode.EDIT:
             self.set_mode(ViewerMode.NORMAL)
 
     def set_mode(self, mode):
@@ -507,10 +543,31 @@ class MainWindow(QMainWindow):
             self.clickDetectBtn.setChecked(False)
             self.brushFillBtn.setChecked(False)
             self.eraserBtn.setChecked(False)
+            self.editModeBtn.setChecked(False)
             # Disable selection for all polygon items
             for item in self.scene.items():
                 if isinstance(item, QGraphicsPolygonItem):
                     item.setFlag(QGraphicsPolygonItem.GraphicsItemFlag.ItemIsSelectable, False)
+
+        elif mode == ViewerMode.EDIT:
+            self.click_to_detect_mode = False
+            self.brush_fill_mode = False
+            self.view.setCursor(Qt.CursorShape.ArrowCursor)
+            # Use NoDrag - we'll handle panning with middle mouse and selection with left mouse
+            self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
+            # Disable selection rectangle drawing in the view
+            from editable_polygon_item import NodeHandle
+            # Ensure all node handles are not selected in Qt's sense
+            for item in self.scene.items():
+                if isinstance(item, NodeHandle):
+                    item.setSelected(False)
+                elif isinstance(item, QGraphicsPolygonItem):
+                    item.setFlag(QGraphicsPolygonItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self.brush_size_slider.setEnabled(False)
+            self.clickDetectBtn.setChecked(False)
+            self.brushFillBtn.setChecked(False)
+            self.eraserBtn.setChecked(False)
+            self.freeHandBtn.setChecked(False)
 
         else:  # ViewerMode.NORMAL
             self.click_to_detect_mode = False
@@ -522,6 +579,7 @@ class MainWindow(QMainWindow):
             self.brushFillBtn.setChecked(False)
             self.eraserBtn.setChecked(False)
             self.freeHandBtn.setChecked(False)
+            self.editModeBtn.setChecked(False)
             # Enable selection for all polygon items
             for item in self.scene.items():
                 if isinstance(item, QGraphicsPolygonItem):
@@ -687,6 +745,12 @@ class MainWindow(QMainWindow):
         polygon_item = self.create_polygon_item(polygon)
         if polygon_item:
             self.scene.addItem(polygon_item)
+            # If in edit mode, convert to editable
+            if self.current_mode == ViewerMode.EDIT:
+                self.scene.convert_to_editable(polygon_item)
+                editable = self.scene.editable_polygons.get(polygon_item)
+                if editable:
+                    editable.set_editing_mode(True)
             self.update_shape_count()
             self.update_attributes_table()
             print(f"Created polygon from free-hand drawing with {polygon.count()} points")
@@ -733,11 +797,81 @@ class MainWindow(QMainWindow):
     def update_delete_button(self):
         selected_items = self.scene.selectedItems()
         self.delete_button.setEnabled(len(selected_items) > 0)
+    
+    def delete_selected_nodes(self):
+        """Delete selected nodes in edit mode."""
+        if self.current_mode != ViewerMode.EDIT:
+            return
+        
+        # Get all editable polygons and delete selected nodes
+        for item in self.scene.items():
+            if isinstance(item, EditablePolygonItem):
+                item.delete_selected_nodes()
+        
+        # Update UI
+        self.update_shape_count()
+        self.update_attributes_table()
+        self.update_delete_nodes_button()
+    
+    def move_selected_nodes(self, delta):
+        """Move selected nodes by delta in edit mode."""
+        if self.current_mode != ViewerMode.EDIT:
+            return
+        
+        # Get all editable polygons and move selected nodes
+        for item in self.scene.items():
+            if isinstance(item, EditablePolygonItem):
+                item.move_selected_nodes(delta)
+        
+        # Update UI
+        self.update_attributes_table()
+    
+    def update_delete_nodes_button(self):
+        """Update the delete nodes button state based on selected nodes."""
+        if self.current_mode != ViewerMode.EDIT:
+            self.delete_nodes_button.setEnabled(False)
+            return
+        
+        # Check if any editable polygon has selected nodes
+        has_selected = False
+        for item in self.scene.items():
+            if isinstance(item, EditablePolygonItem):
+                if item.get_selected_nodes():
+                    has_selected = True
+                    break
+        
+        self.delete_nodes_button.setEnabled(has_selected)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Backspace or event.key() == Qt.Key.Key_Delete:
-            self.delete_selected()
-            self.update_shape_count()
+        if self.current_mode == ViewerMode.EDIT:
+            # Handle edit mode keyboard shortcuts
+            if event.key() == Qt.Key.Key_Backspace or event.key() == Qt.Key.Key_Delete:
+                self.delete_selected_nodes()
+                self.update_shape_count()
+                event.accept()
+                return
+            elif event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right):
+                # Move selected nodes with arrow keys
+                step = 1.0 if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 10.0
+                delta = QPointF(0, 0)
+                if event.key() == Qt.Key.Key_Up:
+                    delta = QPointF(0, -step)
+                elif event.key() == Qt.Key.Key_Down:
+                    delta = QPointF(0, step)
+                elif event.key() == Qt.Key.Key_Left:
+                    delta = QPointF(-step, 0)
+                elif event.key() == Qt.Key.Key_Right:
+                    delta = QPointF(step, 0)
+                self.move_selected_nodes(delta)
+                event.accept()  # Accept to prevent viewport scrolling
+                return
+        else:
+            # Normal mode: delete selected polygons
+            if event.key() == Qt.Key.Key_Backspace or event.key() == Qt.Key.Key_Delete:
+                self.delete_selected()
+                self.update_shape_count()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def handle_attribute_edit(self, item):

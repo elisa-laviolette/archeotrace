@@ -1,6 +1,6 @@
-from PyQt6.QtWidgets import QGraphicsView
+from PyQt6.QtWidgets import QGraphicsView, QStyleOptionGraphicsItem, QApplication
 from PyQt6.QtCore import Qt, QEvent, QPointF
-from PyQt6.QtGui import QWheelEvent, QPainter, QResizeEvent
+from PyQt6.QtGui import QWheelEvent, QPainter, QResizeEvent, QMouseEvent, QKeyEvent
 
 class ZoomableGraphicsView(QGraphicsView):
     def __init__(self, *args, **kwargs):
@@ -138,3 +138,75 @@ class ZoomableGraphicsView(QGraphicsView):
         # Update label visibility when viewport size changes
         if self.scene():
             self.scene().update_label_visibility()
+    
+    def drawItems(self, painter, items, options):
+        """Override to prevent drawing selection rectangles for node handles."""
+        from editable_polygon_item import NodeHandle, TangentHandle
+        # Filter out selection rectangles for node handles
+        for i, option in enumerate(options):
+            if isinstance(items[i], (NodeHandle, TangentHandle)):
+                # Remove selection state from the option to prevent rectangle drawing
+                option.state &= ~QStyleOptionGraphicsItem.StateFlag.StateSelected
+        super().drawItems(painter, items, options)
+    
+    def mousePressEvent(self, event: QMouseEvent):
+        """Handle mouse press for panning with middle mouse button in edit mode."""
+        # Allow middle mouse button to pan even when drag mode is NoDrag
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # Temporarily enable ScrollHandDrag for panning
+            old_drag_mode = self.dragMode()
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            # Translate middle button to left button for panning
+            translated_event = QMouseEvent(
+                event.type(),
+                event.position(),
+                event.globalPosition(),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                event.modifiers(),
+                event.source()
+            )
+            result = super().mousePressEvent(translated_event)
+            # Restore original drag mode after handling
+            self.setDragMode(old_drag_mode)
+            return result
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """Handle mouse move for panning with middle mouse button."""
+        if event.buttons() & Qt.MouseButton.MiddleButton:
+            # Temporarily enable ScrollHandDrag for panning
+            old_drag_mode = self.dragMode()
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            # Translate middle button to left button for panning
+            translated_event = QMouseEvent(
+                event.type(),
+                event.position(),
+                event.globalPosition(),
+                Qt.MouseButton.LeftButton,
+                event.buttons() & ~Qt.MouseButton.MiddleButton | Qt.MouseButton.LeftButton,
+                event.modifiers(),
+                event.source()
+            )
+            result = super().mouseMoveEvent(translated_event)
+            # Restore original drag mode after handling
+            self.setDragMode(old_drag_mode)
+            return result
+        super().mouseMoveEvent(event)
+    
+    def keyPressEvent(self, event: QKeyEvent):
+        """Override to prevent arrow key scrolling in edit mode."""
+        # Check if we're in edit mode by checking the scene
+        if self.scene():
+            from viewer_mode import ViewerMode
+            if hasattr(self.scene(), 'current_mode') and self.scene().current_mode == ViewerMode.EDIT:
+                # In edit mode, don't handle arrow keys for scrolling
+                # Forward to main window to handle node movement
+                if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right):
+                    # Forward to main window if available
+                    if hasattr(self, 'main_window'):
+                        # Call the main window's keyPressEvent directly
+                        self.main_window.keyPressEvent(event)
+                    event.accept()
+                    return
+        super().keyPressEvent(event)

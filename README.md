@@ -9,6 +9,12 @@ ArcheoTrace is a tool for detecting and tracing artifacts in archaeological imag
 - **Brush Fill Detection**: Paint over an artifact to detect and trace its outline
 - **Free-hand Drawing**: Draw artifact outlines manually by holding the left mouse button and moving the mouse
 - **Eraser Tool**: Manually erase parts of detected artifacts by drawing with the eraser
+- **Polygon Edit Mode**: Edit polygon nodes with advanced features:
+  - Drag nodes to reposition them
+  - Select single or multiple nodes (click, Ctrl+click, or selection rectangle)
+  - Delete selected nodes (Delete/Backspace key or button)
+  - Move selected nodes with arrow keys (Shift for larger steps)
+  - Add new nodes by double-clicking on segments
 - **Export Options**: Export artifacts as SVG or GeoPackage (for GeoTIFF images)
 - **Attribute Management**: Add and edit text attributes for each artifact
 - **Smart Labels**: Text labels displayed on artifacts with:
@@ -174,6 +180,28 @@ ArcheoTrace provides several methods to add artifacts:
   - When only part of a polygon is visible, labels appear in the visible portion
   - Labels automatically hide when zoomed out too far to prevent clutter
   - Labels maintain a constant size regardless of zoom level for readability
+- **Polygon Edit Mode**: 
+  1. Click **"Edit Mode"** to enter polygon editing mode
+  2. Node handles (blue circles) will appear on all polygon vertices
+  3. **Select nodes**: 
+     - Click on a node to select it
+     - Hold Ctrl and click to add/remove nodes from selection
+     - Drag to create a selection rectangle around multiple nodes
+  4. **Move nodes**: 
+     - Drag a node to move it
+     - If multiple nodes are selected, dragging one moves all selected nodes together
+     - Use arrow keys to move selected nodes (hold Shift for larger steps)
+  5. **Delete nodes**: 
+     - Select one or more nodes
+     - Press Delete/Backspace or click **"Delete Selected Nodes"**
+     - Note: Polygons must have at least 3 nodes
+  6. **Add nodes**: 
+     - Double-click on a polygon segment (edge) to add a new node at its midpoint
+     - The new node will be automatically selected
+  7. **Pan and zoom**: 
+     - Use middle mouse button to pan the view
+     - Use mouse wheel to zoom
+  8. Click **"Edit Mode"** again to exit edit mode
 - **Eraser Tool**: 
   1. Click **"Eraser Tool"** to enter eraser mode
   2. Adjust the brush size using the slider at the bottom

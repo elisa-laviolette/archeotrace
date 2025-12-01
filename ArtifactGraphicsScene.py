@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QGraphicsScene, QGraphicsPolygonItem, QPushButton
+from PyQt6.QtWidgets import QGraphicsScene, QGraphicsPolygonItem, QPushButton, QGraphicsRectItem, QGraphicsView
 from PyQt6.QtGui import QPen, QColor, QPainterPath, QBrush, QPainter, QImage, QPolygonF
 from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal, QRectF
 from viewer_mode import ViewerMode
@@ -8,6 +8,7 @@ import cv2
 from shapely.geometry import Polygon as ShapelyPolygon, Point, LineString
 from shapely.ops import unary_union
 from artifact_polygon_item import ArtifactPolygonItem
+from editable_polygon_item import EditablePolygonItem, NodeHandle, TangentHandle
 
 class ArtifactGraphicsScene(QGraphicsScene):
     attribute_changed = pyqtSignal()  # Signal emitted when a polygon's attribute changes
@@ -25,6 +26,10 @@ class ArtifactGraphicsScene(QGraphicsScene):
         self.freehand_points = []  # Store free-hand drawing points
         self.freehand_path = None  # QPainterPath for visual feedback
         self.freehand_item = None  # QGraphicsPathItem for visual feedback
+        # Edit mode state
+        self.editable_polygons = {}  # Map: ArtifactPolygonItem -> EditablePolygonItem
+        self.selection_rect_item = None  # Rectangle for multi-selection
+        self.selection_start_pos = None
 
     # Define signals for segmentation requests
     segmentation_validation_requested = pyqtSignal()
@@ -47,6 +52,70 @@ class ArtifactGraphicsScene(QGraphicsScene):
         elif self.current_mode == ViewerMode.FREEHAND and event.button() == Qt.MouseButton.LeftButton:
             self.start_freehand_drawing(event.scenePos())
             return
+        elif self.current_mode == ViewerMode.EDIT and event.button() == Qt.MouseButton.LeftButton:
+            # First, let the event propagate to child items (handles)
+            # This allows handles to receive and process the event
+            super().mousePressEvent(event)
+            
+            # Check if we clicked on a handle by searching through items at this position
+            clicked_item = None
+            if self.views():
+                # Get all items at this position (not just the top one)
+                items_at_pos = self.items(event.scenePos())
+                for item in items_at_pos:
+                    if isinstance(item, (NodeHandle, TangentHandle)):
+                        clicked_item = item
+                        break
+                    # Also check if it's an editable polygon - check its handles
+                    if isinstance(item, EditablePolygonItem):
+                        # Check if any of the polygon's handles are at this position
+                        for handle in item.node_handles:
+                            # Map handle's bounding rect to scene coordinates
+                            handle_scene_rect = handle.mapRectToScene(handle.boundingRect())
+                            if handle_scene_rect.contains(event.scenePos()):
+                                clicked_item = handle
+                                break
+                        if clicked_item:
+                            break
+                        # Also check tangent handles
+                        for handle in item.tangent_handles.values():
+                            handle_scene_rect = handle.mapRectToScene(handle.boundingRect())
+                            if handle_scene_rect.contains(event.scenePos()):
+                                clicked_item = handle
+                                break
+                        if clicked_item:
+                            break
+            
+            # If we clicked on a handle, it already handled the event, so we're done
+            if isinstance(clicked_item, (NodeHandle, TangentHandle)):
+                return
+            
+            # Check if clicking on a node (within tolerance) - if so, select it
+            node_clicked = False
+            for editable in self.editable_polygons.values():
+                node_index = editable.find_node_at_point(event.scenePos())
+                if node_index >= 0:
+                    editable.select_node(node_index, add_to_selection=event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                    node_clicked = True
+                    break
+            
+            # If we clicked on a node, don't interfere with panning
+            if node_clicked:
+                return
+            
+            # Check if clicking on a segment - if so, don't start selection
+            for editable in self.editable_polygons.values():
+                segment_index = editable.find_segment_at_point(event.scenePos())
+                if segment_index >= 0:
+                    return  # Clicked on segment, let panning work normally
+            
+            # Start rectangle selection if not clicking on node/segment
+            # In edit mode with NoDrag, we can start selection on empty space
+            self.selection_start_pos = event.scenePos()
+            if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                for editable in self.editable_polygons.values():
+                    editable.deselect_all_nodes()
+            return
         
         super().mousePressEvent(event)
 
@@ -60,6 +129,13 @@ class ArtifactGraphicsScene(QGraphicsScene):
             self.erase(event.scenePos())
         elif self.current_mode == ViewerMode.FREEHAND and event.buttons() & Qt.MouseButton.LeftButton:
             self.continue_freehand_drawing(event.scenePos())
+        elif self.current_mode == ViewerMode.EDIT and event.buttons() & Qt.MouseButton.LeftButton:
+            # Only handle drag for selection rectangle if we started a selection
+            if self.selection_start_pos is not None:
+                self.handle_edit_mode_drag(event.scenePos())
+            # Always call super to allow normal event handling (panning)
+            super().mouseMoveEvent(event)
+            return
             
         super().mouseMoveEvent(event)
 
@@ -71,7 +147,16 @@ class ArtifactGraphicsScene(QGraphicsScene):
             self.stop_erasing()
         elif self.current_mode == ViewerMode.FREEHAND and event.button() == Qt.MouseButton.LeftButton:
             self.finish_freehand_drawing()
+        elif self.current_mode == ViewerMode.EDIT and event.button() == Qt.MouseButton.LeftButton:
+            self.handle_edit_mode_release()
         super().mouseReleaseEvent(event)
+    
+    def mouseDoubleClickEvent(self, event):
+        """Handle double-click events."""
+        if self.current_mode == ViewerMode.EDIT:
+            self.handle_edit_mode_double_click(event.scenePos())
+            return
+        super().mouseDoubleClickEvent(event)
 
     def start_painting(self, position):
         self.current_paint_path = QPainterPath()
@@ -675,8 +760,150 @@ class ArtifactGraphicsScene(QGraphicsScene):
 
             fade_step(1.0)
 
+    def handle_edit_mode_click(self, scene_pos, ctrl_pressed):
+        """Handle mouse click in edit mode (called after event propagation)."""
+        # Check if clicking on a polygon node (within tolerance)
+        # This allows clicking near a node (not just on the handle) to select it
+        for editable in self.editable_polygons.values():
+            node_index = editable.find_node_at_point(scene_pos)
+            if node_index >= 0:
+                editable.select_node(node_index, add_to_selection=ctrl_pressed)
+                return
+        
+        # Check if clicking on a polygon segment (line)
+        for editable in self.editable_polygons.values():
+            segment_index = editable.find_segment_at_point(scene_pos)
+            if segment_index >= 0:
+                # Clicked on a line segment, don't start rectangle selection
+                return
+        
+        # Start rectangle selection if not clicking on a node or line segment
+        # This allows starting selection rectangle from inside a polygon
+        self.selection_start_pos = scene_pos
+        # Deselect all nodes if not holding Ctrl
+        if not ctrl_pressed:
+            for editable in self.editable_polygons.values():
+                editable.deselect_all_nodes()
+    
+    def handle_edit_mode_drag(self, scene_pos):
+        """Handle mouse drag in edit mode for rectangle selection."""
+        if self.selection_start_pos is not None:
+            # Check if we're dragging a handle (if so, don't create selection rectangle)
+            dragged_item = None
+            if self.views():
+                dragged_item = self.itemAt(scene_pos, self.views()[0].transform())
+            
+            if isinstance(dragged_item, (NodeHandle, TangentHandle)):
+                # We're dragging a handle, don't create selection rectangle
+                return
+            
+            # Create or update selection rectangle
+            rect = QRectF(self.selection_start_pos, scene_pos).normalized()
+            
+            if self.selection_rect_item is None:
+                self.selection_rect_item = QGraphicsRectItem(rect)
+                self.selection_rect_item.setPen(QPen(QColor(0, 100, 255), 1, Qt.PenStyle.DashLine))
+                self.selection_rect_item.setBrush(QBrush(QColor(0, 100, 255, 30)))
+                self.addItem(self.selection_rect_item)
+            else:
+                self.selection_rect_item.setRect(rect)
+            
+            # Select nodes in rectangle
+            for editable in self.editable_polygons.values():
+                editable.select_nodes_in_rect(rect)
+    
+    def handle_edit_mode_release(self):
+        """Handle mouse release in edit mode."""
+        # Clean up selection rectangle
+        if self.selection_rect_item:
+            self.removeItem(self.selection_rect_item)
+            self.selection_rect_item = None
+        self.selection_start_pos = None
+    
+    def handle_edit_mode_double_click(self, scene_pos):
+        """Handle double-click in edit mode."""
+        # First check if double-clicking on a node - if so, do nothing
+        for editable in self.editable_polygons.values():
+            node_index = editable.find_node_at_point(scene_pos)
+            if node_index >= 0:
+                # Double-clicking on a node does nothing
+                return
+        
+        # Check if double-clicking on a segment to add a new node
+        for editable in self.editable_polygons.values():
+            segment_index = editable.find_segment_at_point(scene_pos)
+            if segment_index >= 0:
+                editable.add_node_at_segment(segment_index)
+                return
+    
+    def convert_to_editable(self, polygon_item):
+        """Convert an ArtifactPolygonItem to an EditablePolygonItem."""
+        if polygon_item in self.editable_polygons:
+            return self.editable_polygons[polygon_item]
+        
+        # Get polygon data
+        polygon = polygon_item.polygon()
+        text_attr = polygon_item.text_attribute
+        pen = polygon_item.pen()
+        brush = polygon_item.brush()
+        
+        # Create editable version
+        editable = EditablePolygonItem(polygon)
+        editable.set_text_attribute(text_attr)
+        editable.setPen(pen)
+        editable.setBrush(brush)
+        
+        # Store mapping
+        self.editable_polygons[polygon_item] = editable
+        
+        # Replace in scene
+        if polygon_item.text_item and polygon_item.text_item.scene():
+            self.removeItem(polygon_item.text_item)
+        self.removeItem(polygon_item)
+        self.addItem(editable)
+        
+        # Connect modification signal
+        editable.polygon_modified.connect(self.on_polygon_modified)
+        
+        return editable
+    
+    def convert_from_editable(self, editable_item):
+        """Convert an EditablePolygonItem back to an ArtifactPolygonItem."""
+        # Get data
+        polygon = editable_item.polygon()
+        text_attr = editable_item.text_attribute
+        pen = editable_item.pen()
+        brush = editable_item.brush()
+        
+        # Create regular polygon item
+        regular_item = ArtifactPolygonItem(polygon)
+        regular_item.set_text_attribute(text_attr)
+        regular_item.setPen(pen)
+        regular_item.setBrush(brush)
+        
+        # Remove editable version
+        if editable_item.text_item and editable_item.text_item.scene():
+            self.removeItem(editable_item.text_item)
+        self.removeItem(editable_item)
+        
+        # Add regular version
+        self.addItem(regular_item)
+        
+        # Remove from mapping
+        for key, value in list(self.editable_polygons.items()):
+            if value == editable_item:
+                del self.editable_polygons[key]
+                break
+        
+        return regular_item
+    
+    def on_polygon_modified(self):
+        """Handle polygon modification signal."""
+        self.attribute_changed.emit()
+    
     def set_mode(self, mode):
         """Set the current mode of the scene."""
+        old_mode = self.current_mode
         self.current_mode = mode
         
         # Clean up any preview polygons or temporary items
@@ -693,6 +920,20 @@ class ArtifactGraphicsScene(QGraphicsScene):
         
         # Clean up free-hand drawing items
         self.cleanup_freehand_drawing()
+        
+        # Handle edit mode transitions
+        if mode == ViewerMode.EDIT:
+            # Convert all polygons to editable
+            polygon_items = [item for item in self.items() if isinstance(item, ArtifactPolygonItem)]
+            for item in polygon_items:
+                if item not in self.editable_polygons:
+                    editable = self.convert_to_editable(item)
+                    editable.set_editing_mode(True)
+        elif old_mode == ViewerMode.EDIT:
+            # Convert all editable polygons back to regular
+            for editable in list(self.editable_polygons.values()):
+                editable.set_editing_mode(False)
+                self.convert_from_editable(editable)
 
     def set_brush_size(self, size):
         """Set the brush size for painting."""
@@ -818,3 +1059,8 @@ class ArtifactGraphicsScene(QGraphicsScene):
         for item in self.items():
             if isinstance(item, ArtifactPolygonItem):
                 item.update_text_position()
+        
+        # Also update handle sizes for editable polygons
+        for editable in self.editable_polygons.values():
+            if editable.is_editing:
+                editable.update_handle_sizes()
