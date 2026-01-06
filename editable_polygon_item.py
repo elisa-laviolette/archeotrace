@@ -17,6 +17,7 @@ import math
 class EditablePolygonSignals(QObject):
     """Signal holder for EditablePolygonItem since QGraphicsItem is not a QObject."""
     polygon_modified = pyqtSignal()
+    polygon_shape_changed = pyqtSignal(object, object)  # (old_polygon, new_polygon) for undo/redo
 
 
 class NodeHandle(QGraphicsEllipseItem):
@@ -115,11 +116,14 @@ class NodeHandle(QGraphicsEllipseItem):
             # Get the new position
             new_pos = value
             
-            # If this is the first position change, store the initial position
+            # If this is the first position change, store the initial position and polygon state
             if self.drag_start_pos is None:
                 polygon = self.parent_item.polygon()
                 if 0 <= self.node_index < polygon.count():
                     self.drag_start_pos = QPointF(polygon[self.node_index])
+                    # Store old polygon state for undo (only once per drag operation)
+                    if self.parent_item._pending_old_polygon is None:
+                        self.parent_item._pending_old_polygon = QPolygonF(polygon)
             
             # Calculate the delta from the initial position
             if self.drag_start_pos is not None:
@@ -148,6 +152,12 @@ class NodeHandle(QGraphicsEllipseItem):
             self.parent_item.update_tangents_for_node(self.node_index)
             # Reset drag start position
             self.drag_start_pos = None
+            # Emit shape change signal for undo/redo if we have old state
+            if self.parent_item._pending_old_polygon is not None:
+                new_polygon = QPolygonF(self.parent_item.polygon())
+                old_polygon = self.parent_item._pending_old_polygon
+                self.parent_item._pending_old_polygon = None
+                self.parent_item.polygon_shape_changed.emit(old_polygon, new_polygon)
             # Emit modification signal after dragging is complete
             self.parent_item.polygon_modified.emit()
         elif change == QGraphicsItem.GraphicsItemChange.ItemSelectedChange:
@@ -317,6 +327,8 @@ class EditablePolygonItem(ArtifactPolygonItem):
         self.is_editing = False
         self.selection_rect = None  # For rectangle selection
         self.is_batch_updating = False  # Flag to prevent recursive updates during batch moves
+        self.polygon_shape_changed = self.signals.polygon_shape_changed  # Expose signal for convenience
+        self._pending_old_polygon = None  # Store old polygon state before modification
         
         # Initialize tangent data (initially no tangents)
         for i in range(polygon.count()):
@@ -344,12 +356,24 @@ class EditablePolygonItem(ArtifactPolygonItem):
     def create_node_handles(self):
         """Create handles for all polygon nodes."""
         self.remove_all_handles()
-        polygon = self.polygon()
-        for i in range(polygon.count()):
-            handle = NodeHandle(i, self)
-            # Ensure handle is never selected in Qt's sense
-            handle.setSelected(False)
-            self.node_handles.append(handle)
+        try:
+            polygon = self.polygon()
+            if polygon is None or polygon.count() < 3:
+                return
+            
+            # Ensure item is in a scene before creating handles
+            if self.scene() is None:
+                return
+            
+            for i in range(polygon.count()):
+                try:
+                    handle = NodeHandle(i, self)
+                    handle.setSelected(False)
+                    self.node_handles.append(handle)
+                except Exception:
+                    continue
+        except (RuntimeError, AttributeError):
+            pass
     
     def update_handle_sizes(self):
         """Update all handle sizes based on current view scale and line thickness."""
@@ -513,6 +537,9 @@ class EditablePolygonItem(ArtifactPolygonItem):
             # Can't have less than 3 points
             return
         
+        # Store old polygon state for undo
+        old_polygon = QPolygonF(polygon)
+        
         # Remove nodes from polygon
         for index in selected_indices:
             polygon.remove(index)
@@ -566,6 +593,9 @@ class EditablePolygonItem(ArtifactPolygonItem):
         selected_indices = self.get_selected_nodes()
         if not selected_indices:
             return
+        
+        # Store old polygon state for undo
+        old_polygon = QPolygonF(self.polygon())
         
         # Set flag to prevent recursive updates from itemChange
         self.is_batch_updating = True
@@ -667,6 +697,10 @@ class EditablePolygonItem(ArtifactPolygonItem):
             # Update text position
             if self.text_item:
                 self.update_text_position()
+            
+            # Emit shape change signal for undo/redo
+            new_polygon = QPolygonF(self.polygon())
+            self.polygon_shape_changed.emit(old_polygon, new_polygon)
         finally:
             # Always reset the flag
             self.is_batch_updating = False

@@ -36,7 +36,9 @@ class ArtifactGraphicsScene(QGraphicsScene):
     segmentation_preview_requested = pyqtSignal(QPointF)
     segmentation_from_paint_data_requested = pyqtSignal(list)
     segmentation_with_points_requested = pyqtSignal(object, list, list, QImage, list)  # (polygon_item, foreground_points, background_points, polygon_mask, bounding_box)
-    freehand_polygon_created = pyqtSignal(QPolygonF)  # Signal for direct polygon creation from free-hand drawing
+    freehand_polygon_created = pyqtSignal(QPolygonF)
+    erasing_complete = pyqtSignal(list, list, list, list)  # (original_items, new_items, original_data, new_data) for undo/redo
+    polygon_shape_changed_for_undo = pyqtSignal(object, object, object)  # (editable_item, old_polygon, new_polygon) for undo/redo  # Signal for direct polygon creation from free-hand drawing
 
     def mousePressEvent(self, event):
         if self.current_mode == ViewerMode.BRUSH and event.button() == Qt.MouseButton.LeftButton:
@@ -200,7 +202,12 @@ class ArtifactGraphicsScene(QGraphicsScene):
             print("No eraser points collected or not enough points")
             # Clean up visual feedback
             if self.eraser_item:
-                self.removeItem(self.eraser_item)
+                try:
+                    if self.eraser_item.scene() == self:
+                        self.removeItem(self.eraser_item)
+                except (RuntimeError, AttributeError):
+                    # Item might have been deleted or scene changed
+                    pass
                 self.eraser_item = None
                 self.eraser_path = None
                 self.eraser_points = []
@@ -258,10 +265,19 @@ class ArtifactGraphicsScene(QGraphicsScene):
         # Clean up visual feedback
         if self.eraser_item:
             print("Removing eraser visual feedback")
-            self.removeItem(self.eraser_item)
-            self.eraser_item = None
-            self.eraser_path = None
-            self.eraser_points = []  # Clear the eraser points list
+            try:
+                scene = self.eraser_item.scene()
+                if scene == self:
+                    self.removeItem(self.eraser_item)
+            except (RuntimeError, AttributeError):
+                # Item might have been deleted or scene changed
+                pass
+            except Exception as e:
+                print(f"Error removing eraser item: {e}")
+            finally:
+                self.eraser_item = None
+                self.eraser_path = None
+                self.eraser_points = []  # Clear the eraser points list
 
     def smooth_eraser_path(self):
         """Apply smoothing to the eraser path similar to freehand mode."""
@@ -363,14 +379,29 @@ class ArtifactGraphicsScene(QGraphicsScene):
             # Minimum area threshold for keeping polygons (in pixels squared)
             min_area_threshold = 100.0  # Adjust this value as needed
             
+            # Store original and new items for undo/redo
+            # Also store data dictionaries to avoid accessing removed items
+            original_items = []
+            original_items_data = []  # Store data for each original item
+            all_new_items = []
+            new_items_data = []  # Store data for each new item
+            
             # Process each polygon
             for polygon_item in polygons_to_erase:
-                original_polygon = polygon_item.polygon()
-                original_text = polygon_item.text_attribute
+                # Capture all data BEFORE removing the item
+                try:
+                    original_polygon = QPolygonF(polygon_item.polygon())  # Make a copy
+                    original_text = polygon_item.text_attribute
+                    original_pen = QPen(polygon_item.pen())  # Make a copy
+                    original_brush = QBrush(polygon_item.brush())  # Make a copy
+                except (RuntimeError, AttributeError) as e:
+                    print(f"Error capturing original item data: {e}")
+                    continue
                 
                 # Convert to Shapely
                 original_shapely = self.qpolygonf_to_shapely(original_polygon)
                 if original_shapely.is_empty:
+                    print("Original polygon is empty, skipping")
                     continue
                 
                 # Perform difference operation
@@ -392,9 +423,20 @@ class ArtifactGraphicsScene(QGraphicsScene):
                     if result.area >= min_area_threshold:
                         result_polygons.append(result)
                 
-                # Store the original style before removing the item
-                original_pen = polygon_item.pen()
-                original_brush = polygon_item.brush()
+                # Store original item data - only after we know we'll process it
+                item_data = {
+                    'polygon': original_polygon,
+                    'text': original_text,
+                    'pen': original_pen,
+                    'brush': original_brush
+                }
+                
+                # Track original item for undo (store the captured data)
+                # Add to lists BEFORE processing, so they're always in sync
+                original_items.append(polygon_item)
+                original_items_data.append(item_data)
+                new_items_for_this_polygon = []
+                new_items_data_for_this_polygon = []
                 
                 # Remove the original polygon (only if we have results, otherwise it's completely erased)
                 if result_polygons:
@@ -410,6 +452,8 @@ class ArtifactGraphicsScene(QGraphicsScene):
                             self.removeItem(polygon_item.text_item)
                         self.removeItem(polygon_item)
                     print(f"Polygon completely erased or too small (area < {min_area_threshold})")
+                    # Still keep original_items and original_items_data for undo, but no new items
+                    # The item has already been added to both lists above
                     continue
                 
                 # Create new polygon items from the results
@@ -444,10 +488,66 @@ class ArtifactGraphicsScene(QGraphicsScene):
                             new_item.setBrush(original_brush)
                         
                         self.addItem(new_item)
+                        new_items_for_this_polygon.append(new_item)
+                        
+                        # Capture data for new item
+                        try:
+                            new_items_data_for_this_polygon.append({
+                                'polygon': QPolygonF(new_item.polygon()),
+                                'text': new_item.text_attribute,
+                                'pen': QPen(new_item.pen()),
+                                'brush': QBrush(new_item.brush())
+                            })
+                        except (RuntimeError, AttributeError) as e:
+                            print(f"Error capturing new item data: {e}")
+                            # Fallback: use the data we already have
+                            if use_random_colors:
+                                fallback_pen = QPen(QColor(r, g, b))
+                                fallback_pen.setWidth(original_pen.width())
+                                fallback_brush = QBrush(QColor(r, g, b, 50))
+                            else:
+                                fallback_pen = original_pen
+                                fallback_brush = original_brush
+                            new_items_data_for_this_polygon.append({
+                                'polygon': QPolygonF(qpolygon),
+                                'text': original_text,
+                                'pen': fallback_pen,
+                                'brush': fallback_brush
+                            })
+                        
                         print(f"Created new polygon with {qpolygon.count()} points, area: {result_poly.area}")
+                
+                all_new_items.extend(new_items_for_this_polygon)
+                new_items_data.extend(new_items_data_for_this_polygon)
+            
+            # Emit signal with erasing data for undo/redo
+            # Pass both items and data - data is captured before items are removed
+            if original_items:
+                # Ensure data lists match item lists
+                if len(original_items) != len(original_items_data):
+                    min_len = min(len(original_items), len(original_items_data))
+                    original_items = original_items[:min_len]
+                    original_items_data = original_items_data[:min_len]
+                
+                if len(all_new_items) != len(new_items_data):
+                    min_len = min(len(all_new_items), len(new_items_data))
+                    all_new_items = all_new_items[:min_len]
+                    new_items_data = new_items_data[:min_len]
+                
+                try:
+                    self.erasing_complete.emit(original_items, all_new_items, original_items_data, new_items_data)
+                except Exception as e:
+                    print(f"Error emitting erasing_complete signal: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             # Emit signal to update UI
-            self.attribute_changed.emit()
+            try:
+                self.attribute_changed.emit()
+            except Exception as e:
+                print(f"Error emitting attribute_changed signal: {e}")
+                import traceback
+                traceback.print_exc()
                 
         except Exception as e:
             print(f"Error in process_manual_erasing: {str(e)}")
@@ -835,39 +935,107 @@ class ArtifactGraphicsScene(QGraphicsScene):
         if polygon_item in self.editable_polygons:
             return self.editable_polygons[polygon_item]
         
-        # Get polygon data
-        polygon = polygon_item.polygon()
-        text_attr = polygon_item.text_attribute
-        pen = polygon_item.pen()
-        brush = polygon_item.brush()
+        # Check if item is still in the scene
+        try:
+            if polygon_item.scene() != self:
+                # Item is not in this scene, skip conversion
+                return None
+        except (RuntimeError, AttributeError):
+            # Item might be invalid, skip conversion
+            return None
+        
+        # Get polygon data - wrap in try-except to handle invalid items
+        try:
+            # Validate polygon first
+            polygon = polygon_item.polygon()
+            if polygon is None or polygon.count() < 3:
+                print(f"Invalid polygon (None or < 3 points)")
+                return None
+            
+            text_attr = polygon_item.text_attribute
+            pen = polygon_item.pen()
+            brush = polygon_item.brush()
+            
+            # Validate pen and brush
+            if pen is None or brush is None:
+                print(f"Invalid pen or brush")
+                return None
+        except (RuntimeError, AttributeError, TypeError):
+            return None
         
         # Create editable version
-        editable = EditablePolygonItem(polygon)
-        editable.set_text_attribute(text_attr)
-        editable.setPen(pen)
-        editable.setBrush(brush)
+        try:
+            editable = EditablePolygonItem(polygon)
+            editable.set_text_attribute(text_attr)
+            editable.setPen(pen)
+            editable.setBrush(brush)
+        except Exception:
+            return None
         
         # Store mapping
         self.editable_polygons[polygon_item] = editable
         
-        # Replace in scene
-        if polygon_item.text_item and polygon_item.text_item.scene():
-            self.removeItem(polygon_item.text_item)
-        self.removeItem(polygon_item)
-        self.addItem(editable)
+        # Replace in scene - check if items are still in scene before removing
+        try:
+            # Remove text item first if it exists
+            if polygon_item.text_item:
+                try:
+                    if polygon_item.text_item.scene() == self:
+                        self.removeItem(polygon_item.text_item)
+                except (RuntimeError, AttributeError):
+                    pass  # Item might be invalid, skip
+            
+            # Remove original polygon item
+            if polygon_item.scene() == self:
+                self.removeItem(polygon_item)
+            
+            # Add editable version
+            self.addItem(editable)
+            
+            # Process events to ensure item is fully added
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+            
+        except (RuntimeError, AttributeError):
+            # Clean up editable if we failed to add it
+            try:
+                if editable.scene() == self:
+                    self.removeItem(editable)
+            except:
+                pass
+            # Remove from mapping
+            if polygon_item in self.editable_polygons:
+                del self.editable_polygons[polygon_item]
+            return None
         
-        # Connect modification signal
-        editable.polygon_modified.connect(self.on_polygon_modified)
+        # Connect modification signals
+        try:
+            editable.polygon_modified.connect(self.on_polygon_modified)
+            editable.polygon_shape_changed.connect(self.on_polygon_shape_changed)
+        except Exception:
+            pass
         
         return editable
     
     def convert_from_editable(self, editable_item):
         """Convert an EditablePolygonItem back to an ArtifactPolygonItem."""
+        # Check if item is still in the scene
+        try:
+            if editable_item.scene() != self:
+                # Item is not in this scene, skip conversion
+                return None
+        except (RuntimeError, AttributeError):
+            # Item might be invalid, skip conversion
+            return None
+        
         # Get data
-        polygon = editable_item.polygon()
-        text_attr = editable_item.text_attribute
-        pen = editable_item.pen()
-        brush = editable_item.brush()
+        try:
+            polygon = editable_item.polygon()
+            text_attr = editable_item.text_attribute
+            pen = editable_item.pen()
+            brush = editable_item.brush()
+        except (RuntimeError, AttributeError):
+            return None
         
         # Create regular polygon item
         regular_item = ArtifactPolygonItem(polygon)
@@ -875,13 +1043,24 @@ class ArtifactGraphicsScene(QGraphicsScene):
         regular_item.setPen(pen)
         regular_item.setBrush(brush)
         
-        # Remove editable version
-        if editable_item.text_item and editable_item.text_item.scene():
-            self.removeItem(editable_item.text_item)
-        self.removeItem(editable_item)
-        
-        # Add regular version
-        self.addItem(regular_item)
+        # Remove editable version - check if items are still in scene before removing
+        try:
+            if editable_item.text_item:
+                try:
+                    if editable_item.text_item.scene() == self:
+                        self.removeItem(editable_item.text_item)
+                except (RuntimeError, AttributeError):
+                    pass  # Item might be invalid, skip
+            if editable_item.scene() == self:
+                self.removeItem(editable_item)
+            
+            # Add regular version
+            self.addItem(regular_item)
+        except (RuntimeError, AttributeError):
+            # Clean up regular_item if we failed to add it
+            if regular_item.scene() == self:
+                self.removeItem(regular_item)
+            return None
         
         # Remove from mapping
         for key, value in list(self.editable_polygons.items()):
@@ -895,6 +1074,15 @@ class ArtifactGraphicsScene(QGraphicsScene):
         """Handle polygon modification signal."""
         self.attribute_changed.emit()
     
+    def on_polygon_shape_changed(self, old_polygon, new_polygon):
+        """Handle polygon shape change signal for undo/redo."""
+        # Find the editable polygon item that emitted this signal
+        for editable in self.editable_polygons.values():
+            if editable.polygon() == new_polygon:
+                # Emit signal to main window with the editable item and polygon states
+                self.polygon_shape_changed_for_undo.emit(editable, old_polygon, new_polygon)
+                break
+    
     def set_mode(self, mode):
         """Set the current mode of the scene."""
         old_mode = self.current_mode
@@ -907,7 +1095,12 @@ class ArtifactGraphicsScene(QGraphicsScene):
             
         # Clean up eraser items
         if self.eraser_item:
-            self.removeItem(self.eraser_item)
+            try:
+                if self.eraser_item.scene() == self:
+                    self.removeItem(self.eraser_item)
+            except (RuntimeError, AttributeError):
+                # Item might have been deleted or scene changed
+                pass
             self.eraser_item = None
             self.eraser_path = None
             self.eraser_points = []
@@ -918,16 +1111,101 @@ class ArtifactGraphicsScene(QGraphicsScene):
         # Handle edit mode transitions
         if mode == ViewerMode.EDIT:
             # Convert all polygons to editable
-            polygon_items = [item for item in self.items() if isinstance(item, ArtifactPolygonItem)]
-            for item in polygon_items:
-                if item not in self.editable_polygons:
-                    editable = self.convert_to_editable(item)
-                    editable.set_editing_mode(True)
+            # Make a copy of items list to avoid modification during iteration
+            try:
+                # Get a snapshot of items - filter to only ArtifactPolygonItem that are valid
+                all_items = []
+                for item in self.items():
+                    try:
+                        if isinstance(item, ArtifactPolygonItem):
+                            # Quick validation - can we access scene?
+                            if item.scene() == self:
+                                all_items.append(item)
+                    except (RuntimeError, AttributeError):
+                        # Skip invalid items
+                        continue
+                
+                polygon_items = []
+                for item in all_items:
+                    try:
+                        # Skip if already editable
+                        if item in self.editable_polygons:
+                            continue
+                        
+                        # Validate item properties before adding to conversion list
+                        try:
+                            polygon = item.polygon()
+                            if polygon is None or polygon.count() < 3:
+                                continue
+                            # Quick test of other properties
+                            _ = item.pen()
+                            _ = item.brush()
+                        except (RuntimeError, AttributeError, TypeError):
+                            continue
+                        
+                        polygon_items.append(item)
+                    except (RuntimeError, AttributeError):
+                        continue
+                
+                # Convert items one at a time, processing events between each
+                from PyQt6.QtWidgets import QApplication
+                for item in polygon_items:
+                    try:
+                        # Final check before conversion
+                        if item.scene() != self or item in self.editable_polygons:
+                            continue
+                        
+                        # Convert to editable
+                        editable = self.convert_to_editable(item)
+                        if not editable:
+                            continue
+                        
+                        # Process events to ensure conversion is complete
+                        QApplication.processEvents()
+                        
+                        # Verify editable is valid before setting editing mode
+                        if editable.scene() != self:
+                            continue
+                        
+                        try:
+                            polygon = editable.polygon()
+                            if polygon is None or polygon.count() < 3:
+                                continue
+                        except (RuntimeError, AttributeError):
+                            continue
+                        
+                        # Process events again before setting editing mode
+                        QApplication.processEvents()
+                        
+                        # Set editing mode
+                        editable.set_editing_mode(True)
+                        
+                        # Process events after each conversion
+                        QApplication.processEvents()
+                        
+                    except Exception as e:
+                        # Continue with next item on error
+                        continue
+                        
+            except Exception as e:
+                # Silently handle errors during mode transition
+                pass
         elif old_mode == ViewerMode.EDIT:
             # Convert all editable polygons back to regular
-            for editable in list(self.editable_polygons.values()):
-                editable.set_editing_mode(False)
-                self.convert_from_editable(editable)
+            # Make a copy of the values list to avoid modification during iteration
+            editable_items = list(self.editable_polygons.values())
+            for editable in editable_items:
+                try:
+                    if editable.scene() == self:  # Only convert if still in scene
+                        editable.set_editing_mode(False)
+                        self.convert_from_editable(editable)
+                except (RuntimeError, AttributeError):
+                    # Remove from mapping if item is invalid
+                    for key, value in list(self.editable_polygons.items()):
+                        if value == editable:
+                            del self.editable_polygons[key]
+                            break
+                    continue
 
     def set_brush_size(self, size):
         """Set the brush size for painting."""

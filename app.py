@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication, QToolBar, QFileDialog, QVBoxLayout, QLabel, QGraphicsView, QScroller, QPushButton, QDockWidget, QGraphicsPolygonItem, QSlider, QProgressBar, QTableWidget, QTableWidgetItem, QMessageBox
-from PyQt6.QtGui import QAction, QPixmap, QImage, QPainter, QPolygonF, QPen, QColor, QBrush
+from PyQt6.QtGui import QAction, QPixmap, QImage, QPainter, QPolygonF, QPen, QColor, QBrush, QKeySequence, QUndoStack
 from PyQt6.QtCore import Qt, QPointF
 from viewer_mode import ViewerMode
 from ArtifactGraphicsScene import ArtifactGraphicsScene
@@ -10,6 +10,7 @@ from editable_polygon_item import EditablePolygonItem
 from svg_exporter import export_scene_to_svg
 from geospatial_handler import GeospatialHandler
 from geopackage_exporter import export_scene_to_geopackage
+from undo_commands import AddPolygonCommand, DeletePolygonCommand, ModifyPolygonCommand, ErasePolygonCommand, BatchCommand, ModifyAttributeCommand
 
 import numpy as np
 import sys
@@ -40,6 +41,9 @@ class MainWindow(QMainWindow):
 
         # Track selected polygon
         self.selected_polygon = None
+
+        # Initialize undo/redo stack
+        self.undo_stack = QUndoStack(self)
 
         # Initialize segment_worker
         self.segment_worker = None
@@ -180,6 +184,19 @@ class MainWindow(QMainWindow):
         viewMenu = self.menuBar().addMenu("View")
         viewMenu.addAction(addArtifactsToolDock.toggleViewAction())
 
+        # Create Edit menu with Undo/Redo actions
+        editMenu = self.menuBar().addMenu("Edit")
+        
+        # Undo action
+        undo_action = self.undo_stack.createUndoAction(self, "Undo")
+        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        editMenu.addAction(undo_action)
+        
+        # Redo action
+        redo_action = self.undo_stack.createRedoAction(self, "Redo")
+        redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        editMenu.addAction(redo_action)
+
         # Create a slider for brush size
         self.brush_size_slider = QSlider(Qt.Orientation.Horizontal)
         self.brush_size_slider.setMinimum(1)  # Minimum brush size
@@ -208,6 +225,8 @@ class MainWindow(QMainWindow):
         self.scene.segmentation_from_paint_data_requested.connect(self.handle_segmentation_from_paint_data)
         self.scene.segmentation_with_points_requested.connect(self.handle_segmentation_with_points)
         self.scene.freehand_polygon_created.connect(self.handle_freehand_polygon)
+        self.scene.erasing_complete.connect(self.handle_erasing_complete)
+        self.scene.polygon_shape_changed_for_undo.connect(self.handle_polygon_shape_changed)
 
         # Connect selection change signal
         self.scene.selectionChanged.connect(self.update_delete_button)
@@ -242,6 +261,9 @@ class MainWindow(QMainWindow):
             
             # Clear previous image
             self.scene.clear()
+            
+            # Clear undo stack when loading new image
+            self.undo_stack.clear()
             
             # Reset GeoTIFF flag
             self.is_geotiff_loaded = False
@@ -336,6 +358,7 @@ class MainWindow(QMainWindow):
             # Create and add the permanent polygon
             polygon_item = self.create_polygon_item(polygon)
             if polygon_item:
+                # Add to scene first (needed for undo command)
                 self.scene.addItem(polygon_item)
                 # If in edit mode, convert to editable
                 if self.current_mode == ViewerMode.EDIT:
@@ -343,6 +366,11 @@ class MainWindow(QMainWindow):
                     editable = self.scene.editable_polygons.get(polygon_item)
                     if editable:
                         editable.set_editing_mode(True)
+                
+                # Create undo command
+                command = AddPolygonCommand(self.scene, polygon_item, "Add polygon from segmentation")
+                self.undo_stack.push(command)
+                
                 self.update_shape_count()
                 self.update_attributes_table()
             else:
@@ -403,6 +431,8 @@ class MainWindow(QMainWindow):
         self.scene.blockSignals(True)
         self.attributes_table.blockSignals(True)
         try:
+            # Collect all polygon items to create a batch command
+            polygon_items = []
             for mask in masks:
                 polygon = self.convert_mask_to_polygon(mask)
                 if polygon:
@@ -416,6 +446,13 @@ class MainWindow(QMainWindow):
                             editable = self.scene.editable_polygons.get(polygon_item)
                             if editable:
                                 editable.set_editing_mode(True)
+                        polygon_items.append(polygon_item)
+            
+            # Create batch undo command for all polygons
+            if polygon_items:
+                commands = [AddPolygonCommand(self.scene, item, "Add polygon") for item in polygon_items]
+                batch_command = BatchCommand(commands, f"Detect {len(polygon_items)} artifacts")
+                self.undo_stack.push(batch_command)
 
             # Update the table view immediately
             self.update_attributes_table()
@@ -485,8 +522,30 @@ class MainWindow(QMainWindow):
 
     def set_mode(self, mode):
         """Set the viewer mode and update the scene mode."""
+        # Clear undo stack when mode actually changes
+        if self.current_mode != mode:
+            # Clear the undo stack and process events to ensure all references are released
+            self.undo_stack.clear()
+            # Process events multiple times to ensure all cleanup is complete
+            from PyQt6.QtWidgets import QApplication
+            for _ in range(3):
+                QApplication.processEvents()
+        
         self.current_mode = mode
-        self.scene.set_mode(mode)
+        
+        # Process any pending events to ensure scene is stable before mode change
+        # This helps avoid crashes when switching modes immediately after operations
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        
+        # Block signals during mode change to prevent interference
+        self.scene.blockSignals(True)
+        try:
+            self.scene.set_mode(mode)
+        finally:
+            self.scene.blockSignals(False)
+            # Process events after mode change
+            QApplication.processEvents()
 
         # Clean up preview polygon at viewer level
         if self.preview_polygon:
@@ -735,6 +794,36 @@ class MainWindow(QMainWindow):
             painting_prompt=foreground_points_array
         )
 
+    def handle_erasing_complete(self, original_items, new_items, original_data, new_data):
+        """Handle erasing completion and create undo command."""
+        if original_items:
+            try:
+                command = ErasePolygonCommand(self.scene, original_items, new_items, original_data, new_data, "Erase polygon")
+                self.undo_stack.push(command)
+            except Exception as e:
+                print(f"Error creating erase undo command: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    def handle_polygon_shape_changed(self, editable_item, old_polygon, new_polygon):
+        """Handle polygon shape change and create undo command."""
+        # The editable_item is the actual item in the scene
+        if editable_item:
+            # Get current attributes
+            old_text = editable_item.text_attribute if hasattr(editable_item, 'text_attribute') else ""
+            new_text = old_text  # Text doesn't change with shape modification
+            old_pen = editable_item.pen() if hasattr(editable_item, 'pen') else None
+            new_pen = old_pen
+            old_brush = editable_item.brush() if hasattr(editable_item, 'brush') else None
+            new_brush = old_brush
+            
+            command = ModifyPolygonCommand(
+                self.scene, editable_item, old_polygon, new_polygon,
+                old_text, new_text, old_pen, new_pen, old_brush, new_brush,
+                "Modify polygon shape"
+            )
+            self.undo_stack.push(command)
+
     def handle_freehand_polygon(self, polygon):
         """Handle the creation of a polygon from free-hand drawing."""
         if polygon is None or polygon.count() < 3:
@@ -751,6 +840,11 @@ class MainWindow(QMainWindow):
                 editable = self.scene.editable_polygons.get(polygon_item)
                 if editable:
                     editable.set_editing_mode(True)
+            
+            # Create undo command
+            command = AddPolygonCommand(self.scene, polygon_item, "Add freehand polygon")
+            self.undo_stack.push(command)
+            
             self.update_shape_count()
             self.update_attributes_table()
             print(f"Created polygon from free-hand drawing with {polygon.count()} points")
@@ -762,20 +856,35 @@ class MainWindow(QMainWindow):
         selected_items = self.scene.selectedItems()
         if not selected_items:
             return
+        
+        # Filter to only ArtifactPolygonItem instances
+        polygon_items = [item for item in selected_items if isinstance(item, ArtifactPolygonItem)]
+        if not polygon_items:
+            return
             
         # Block signals to prevent recursive updates
         self.scene.blockSignals(True)
         self.attributes_table.blockSignals(True)
         
         try:
-            # Remove items from scene
-            for item in selected_items:
-                if isinstance(item, ArtifactPolygonItem):
-                    # Remove text item if it exists
-                    if item.text_item and item.text_item.scene():
-                        self.scene.removeItem(item.text_item)
-                    # Remove the polygon itself
-                    self.scene.removeItem(item)
+            # Create undo commands for all deletions
+            if len(polygon_items) == 1:
+                # Single deletion
+                command = DeletePolygonCommand(self.scene, polygon_items[0], "Delete polygon")
+                self.undo_stack.push(command)
+            else:
+                # Batch deletion
+                commands = [DeletePolygonCommand(self.scene, item, "Delete polygon") for item in polygon_items]
+                batch_command = BatchCommand(commands, f"Delete {len(polygon_items)} polygons")
+                self.undo_stack.push(batch_command)
+            
+            # Remove items from scene (command will handle the actual removal)
+            for item in polygon_items:
+                # Remove text item if it exists
+                if item.text_item and item.text_item.scene():
+                    self.scene.removeItem(item.text_item)
+                # Remove the polygon itself
+                self.scene.removeItem(item)
             
             # Update the table view
             self.update_attributes_table()
@@ -888,7 +997,14 @@ class MainWindow(QMainWindow):
             row = item.row()
             if row < len(polygon_items):
                 polygon_item = polygon_items[row]
-                polygon_item.set_text_attribute(new_value)
+                old_value = polygon_item.text_attribute
+                
+                # Only create command if value actually changed
+                if old_value != new_value:
+                    # Create undo command
+                    command = ModifyAttributeCommand(polygon_item, old_value, new_value, "Modify attribute")
+                    self.undo_stack.push(command)
+                    # Command's redo() will set the new value
         except Exception as e:
             print(f"Error handling attribute edit: {str(e)}")
 
@@ -915,11 +1031,14 @@ class MainWindow(QMainWindow):
                 self.attributes_table.setItem(row, 0, id_item)
                 
                 # Set attribute
-                self.attributes_table.setItem(row, 1, QTableWidgetItem(item.text_attribute))
+                attr_item = QTableWidgetItem(item.text_attribute)
+                self.attributes_table.setItem(row, 1, attr_item)
                 
         finally:
             # Unblock signals
             self.attributes_table.blockSignals(False)
+            # Force table to update/repaint
+            self.attributes_table.viewport().update()
 
     def handle_scene_selection_changed(self):
         """Handle changes in scene selection to update table selection."""

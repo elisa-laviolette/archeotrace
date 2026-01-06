@@ -149,13 +149,18 @@ class ArtifactPolygonItem(QGraphicsPolygonItem):
 
     def set_text_attribute(self, text):
         self.text_attribute = text
-        if self.text_item:
-            self.scene().removeItem(self.text_item)
+        scene = self.scene()
+        if self.text_item and scene:
+            scene.removeItem(self.text_item)
             self.text_item = None
         if text:
             self.update_text_position()
         else:
             self.text_item = None
+        
+        # Emit signal to notify scene that attribute changed
+        if scene:
+            scene.attribute_changed.emit()
 
     def calculate_polygon_centroid(self):
         """Calculate the geometric centroid of the polygon"""

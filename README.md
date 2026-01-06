@@ -15,6 +15,13 @@ ArcheoTrace is a tool for detecting and tracing artifacts in archaeological imag
   - Delete selected nodes (Delete/Backspace key or button)
   - Move selected nodes with arrow keys (Shift for larger steps)
   - Add new nodes by double-clicking on segments
+- **Undo/Redo System**: Full undo/redo support for all operations:
+  - Undo/Redo adding, deleting, and modifying polygons
+  - Undo/Redo eraser operations (including splits)
+  - Undo/Redo attribute changes
+  - Undo/Redo node editing operations
+  - Standard keyboard shortcuts: Cmd+Z (Undo), Cmd+Shift+Z (Redo)
+  - Undo stack is cleared when switching modes or loading new images
 - **Export Options**: Export artifacts as SVG or GeoPackage (for GeoTIFF images)
 - **Attribute Management**: Add and edit text attributes for each artifact
 - **Smart Labels**: Text labels displayed on artifacts with:
@@ -175,6 +182,11 @@ ArcheoTrace provides several methods to add artifacts:
 - **Select Artifacts**: Click on an artifact to select it (in normal mode)
 - **Delete Artifacts**: Select one or more artifacts and click **"Delete Selected Artifact"** or press Delete/Backspace
 - **Edit Attributes**: Double-click an artifact or edit its attribute in the "Artifact Attributes" table
+- **Undo/Redo**: 
+  - Use **Edit → Undo** (Cmd+Z) to undo the last operation
+  - Use **Edit → Redo** (Cmd+Shift+Z) to redo an undone operation
+  - All operations are undoable except view-related actions (panning, zooming)
+  - The undo stack is automatically cleared when switching modes or loading a new image
   - Text labels automatically appear on artifacts when attributes are set
   - Labels are centered on the polygon's centroid by default
   - When only part of a polygon is visible, labels appear in the visible portion
@@ -232,6 +244,9 @@ python -m unittest test_eraser.py
 
 # Run tests for label functionality
 python -m unittest test_labels.py
+
+# Run tests for undo/redo functionality
+python -m unittest test_undo_redo.py
 
 # Run all tests
 python -m unittest discover -s . -p "test_*.py"
