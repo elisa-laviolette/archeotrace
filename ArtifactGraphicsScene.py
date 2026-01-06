@@ -230,24 +230,18 @@ class ArtifactGraphicsScene(QGraphicsScene):
                 
                 # Also check if eraser path intersects polygon boundary
                 if not eraser_intersects:
-                    # Create a simple path from eraser points to check intersection
-                    eraser_path_simple = QPainterPath()
-                    if self.eraser_points:
-                        eraser_path_simple.moveTo(self.eraser_points[0])
-                        for point in self.eraser_points[1:]:
-                            eraser_path_simple.lineTo(point)
+                    # Convert polygon to Shapely for intersection checking
+                    polygon_shapely = self.qpolygonf_to_shapely(polygon)
                     
                     # Check if the eraser path intersects with the polygon
                     # by checking if any segment of the eraser path intersects the polygon
                     for i in range(len(self.eraser_points) - 1):
                         p1 = self.eraser_points[i]
                         p2 = self.eraser_points[i + 1]
-                        # Create a line segment
-                        line_path = QPainterPath()
-                        line_path.moveTo(p1)
-                        line_path.lineTo(p2)
+                        # Create a Shapely LineString from the line segment
+                        line_segment = LineString([(p1.x(), p1.y()), (p2.x(), p2.y())])
                         # Check if this line segment intersects the polygon
-                        if polygon.intersects(line_path):
+                        if polygon_shapely.intersects(line_segment):
                             eraser_intersects = True
                             break
                 
